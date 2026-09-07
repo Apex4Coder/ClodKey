@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
     name: Gates (ASCII / parse / smoke / selftest)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: ASCII-only check (.ps1/.bat/.vbs) + CRLF for .bat
         shell: pwsh
@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload evidence (logs)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: test-logs
           path: logs/

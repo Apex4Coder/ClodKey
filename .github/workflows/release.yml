@@ -1,4 +1,4 @@
-name: Release
+﻿name: Release
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
     name: Package zip + GitHub Release
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run gates before packaging
         shell: pwsh
