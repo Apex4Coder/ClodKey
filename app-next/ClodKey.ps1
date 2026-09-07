@@ -464,20 +464,15 @@ $fontMicro = New-FontFromStack @('Bahnschrift', 'Segoe UI Variable Text', 'Segoe
 $fontMono  = New-FontFromStack @('Cascadia Code', 'Cascadia Mono', 'Consolas') 9.0 $REG
 $fontGlyph = New-FontFromStack @('Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei', 'Segoe UI Emoji') 9.0 $REG
 
-# ---------- system keys discovery (env vars + ~/.claude/settings.json) ----------
-# $Override lets the selftest inject values deterministically;
+# ---------- system keys discovery (~/.claude/settings.json + env vars) ----------
+# Priority: settings.json FIRST, then env vars fill only what it does not
+# define. settings.json is what Claude CLI actually uses and what "Apply"
+# writes - a stale ANTHROPIC_* env var must never shadow a freshly applied
+# key (reported bug: apply new -> import returns old from env).
+# $Override lets the selftest inject env values deterministically;
 # the real app calls this with no arguments.
 function Get-SystemEnv([hashtable]$Override) {
     $vals = @{}
-    if ($Override) {
-        foreach ($k in $Override.Keys) { if ($Override[$k]) { $vals[$k] = [string]$Override[$k] } }
-        return $vals
-    }
-    foreach ($n in @('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL')) {
-        $v = [Environment]::GetEnvironmentVariable($n, 'User')
-        if (-not $v) { $v = [Environment]::GetEnvironmentVariable($n, 'Machine') }
-        if ($v) { $vals[$n] = [string]$v }
-    }
     $p = Join-Path $env:USERPROFILE '.claude\settings.json'
     if (Test-Path -LiteralPath $p) {
         try {
@@ -486,11 +481,22 @@ function Get-SystemEnv([hashtable]$Override) {
                 foreach ($n in @('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL')) {
                     if ($d.env.PSObject.Properties.Name -contains $n) {
                         $v = [string]$d.env.$n
-                        if ($v -and -not $vals[$n]) { $vals[$n] = $v }
+                        if ($v) { $vals[$n] = $v }
                     }
                 }
             }
         } catch { Write-Log 'warn' ('settings.json read failed: ' + $_.Exception.Message) }
+    }
+    if ($Override) {
+        foreach ($k in $Override.Keys) { if ($Override[$k] -and -not $vals[$k]) { $vals[$k] = [string]$Override[$k] } }
+    } else {
+        foreach ($n in @('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL')) {
+            if (-not $vals[$n]) {
+                $v = [Environment]::GetEnvironmentVariable($n, 'User')
+                if (-not $v) { $v = [Environment]::GetEnvironmentVariable($n, 'Machine') }
+                if ($v) { $vals[$n] = [string]$v }
+            }
+        }
     }
     return $vals
 }
@@ -1509,6 +1515,12 @@ if ($SelfTest) {
         $sys = @($script:Store.profiles | Where-Object { Test-SystemProfile $_ })
         if ($sys.Count -lt 1) { throw 'system import missing' }
         if ((Unprotect-String ([string]$sys[0].apiKey)) -ne 'sk-test-123') { throw 'system import key mismatch' }
+        # priority (the reported bug): settings.json was just written with
+        # sk-test-123 by Apply; a STALE env key must not shadow it on import
+        [void](Import-System $true @{ ANTHROPIC_API_KEY = 'sk-old-env'; ANTHROPIC_AUTH_TOKEN = 'sk-old-env'; ANTHROPIC_BASE_URL = 'https://env.example.com' })
+        $sysP = @($script:Store.profiles | Where-Object { Test-SystemProfile $_ })[0]
+        if ((Unprotect-String ([string]$sysP.apiKey)) -ne 'sk-test-123') { throw 'stale env shadowed settings.json on import' }
+        if ([string]$sysP.baseUrl -ne 'https://test.example.com') { throw 'stale env baseUrl shadowed settings.json' }
         # legacy migration (the reported bug): strip the flag to simulate an
         # old store, re-import must find it by name, dedup, re-stamp, and the
         # language switch must rename it - no Russian leftover in NAME
