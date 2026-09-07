@@ -1414,14 +1414,21 @@ function Show-Logs {
         }
     }
     $lt.Add_MouseDown($dragLog)
+    # CRITICAL: handlers must reference $script:LogForm, NOT the local $lf.
+    # A scriptblock created in a function cannot see the function's local
+    # variables after the function returns (the scope is popped) - the old
+    # $lf.Hide() ran with $lf = $null and threw on click (reported crash).
     $btnLfRefresh.Add_Click({ Update-LogView })
     $btnLfOpen.Add_Click({ Start-Process explorer.exe -ArgumentList ('/select,"' + $LogPath + '"') })
-    $btnLfClose.Add_Click({ $lf.Hide() })
-    # X and Alt+F4 hide the window, never kill the app
+    $btnLfClose.Add_Click({ if ($script:LogForm) { $script:LogForm.Hide() } })
+    # exposed for the selftest regression (the reported crash: close threw
+    # because the handler saw a dead local variable)
+    $script:LogBtnClose = $btnLfClose
+    # X and Alt+F4 hide the window, never kill the app; on real exit
+    # (tray -> Exit) the close must NOT be cancelled or Run() would hang
     $lf.Add_FormClosing({
         param($s, $e)
-        $e.Cancel = $true
-        $lf.Hide()
+        if (-not $script:Exiting) { $e.Cancel = $true; $script:LogForm.Hide() }
     })
 
     if (-not $script:LogTimer) {
@@ -2229,6 +2236,15 @@ if ($SelfTest) {
         if ($sysAfter.Count -ne 1) { throw ('system flag lost on save, count=' + $sysAfter.Count) }
         # log tail must be readable for the viewer window
         if (-not (Get-LogTail 20)) { throw 'log tail empty' }
+        # log viewer regression (the reported crash): open, then click the
+        # close button - it must hide the window, not throw
+        Show-Logs
+        if (-not $script:LogForm.Visible) { throw 'log viewer did not open' }
+        $script:LogBtnClose.PerformClick()
+        if ($script:LogForm.Visible) { throw 'log close button did not hide the window' }
+        $script:LogForm.Close()
+        $script:LogForm.Dispose()
+        $script:LogForm = $null
         # layout: no vertical overlaps between stacked elements (the
         # reported bug: labels ran into the profile block / each other)
         Do-Layout
@@ -2311,6 +2327,13 @@ if ($Shot) {
 
 # first run with zero profiles: show the flyout so the user can add a key
 if (@($script:Store.profiles).Count -eq 0) { Show-Main }
+
+# last-resort safety net: a bug inside any handler must land in the log,
+# never in a crash dialog and never as a silent process death
+[Windows.Forms.Application]::Add_ThreadException({
+    param($s, $e)
+    Write-Log 'error' ('UI thread exception: ' + $e.Exception.Message)
+})
 
 # main loop: Application::Run() WITHOUT a form argument - Run($form) would
 # auto-show the window, breaking "start hidden to tray" (GOLD invariant).
