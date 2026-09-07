@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Package zip + GitHub Release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run gates before packaging
+        shell: pwsh
+        run: |
+          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -Smoke
+          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Render screenshots (evidence)
+        shell: pwsh
+        run: powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -Shot
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $ver = '${{ github.ref_name }}'
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Compress-Archive -Path app-next, deploy.ps1, deploy-next.bat, check-g22.ps1, README.md `
+            -DestinationPath "dist/ClodKey-$ver.zip" -Force
+          Get-ChildItem dist | ForEach-Object { Write-Host $_.FullName }
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          body: |
+            Portable ClodKey ${{ github.ref_name }} - unzip anywhere on Windows 10/11,
+            double-click `app-next\run-hidden.vbs`. No installer, no runtime, no admin.

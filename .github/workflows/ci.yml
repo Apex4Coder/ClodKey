@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: Gates (ASCII / parse / smoke / selftest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ASCII-only check (.ps1/.bat/.vbs) + CRLF for .bat
+        shell: pwsh
+        run: |
+          $fail = 0
+          Get-ChildItem -Recurse -Include *.ps1,*.bat,*.vbs -File |
+            Where-Object { $_.FullName -notmatch '\\live\.prev-' } |
+            ForEach-Object {
+              $bytes = [IO.File]::ReadAllBytes($_.FullName)
+              $nonAscii = @($bytes | Where-Object { $_ -gt 127 }).Count
+              if ($nonAscii -gt 0) { Write-Host "::error file=$($_.Name)::non-ASCII bytes: $nonAscii"; $script:fail = 1 }
+              if ($_.Extension -eq '.bat') {
+                $txt = [Text.Encoding]::ASCII.GetString($bytes)
+                $lone = ([regex]::Matches($txt, "(?<!`r)`n")).Count
+                if ($lone -gt 0) { Write-Host "::error file=$($_.Name)::lone LF: $lone (must be CRLF)"; $script:fail = 1 }
+              }
+            }
+          exit $fail
+
+      - name: PowerShell parse check
+        shell: pwsh
+        run: |
+          $fail = 0
+          Get-ChildItem -Recurse -Include *.ps1 -File | ForEach-Object {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
+            if ($errs.Count) {
+              $script:fail = 1
+              $errs | ForEach-Object { Write-Host "::error file=$($_.Name)::line $($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          exit $fail
+
+      - name: Smoke (UI builds, DPAPI roundtrip)
+        shell: pwsh
+        run: powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -Smoke
+
+      - name: SelfTest (save/apply/import/lang/theme/layout asserts)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload evidence (logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: logs/
+          if-no-files-found: ignore
