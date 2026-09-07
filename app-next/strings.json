@@ -35,6 +35,7 @@
     "models_none": "Модели не найдены на этом Base URL",
     "models_ready": "Моделей OK: {0} · QUOTA: {1} · метод: {2}",
     "model_locked": "Модель неактивна (нет квоты) - выбери OK",
+    "tip_refresh": "Проверить ключ и обновить список моделей",
     "tip_new": "Очистить форму и создать новый профиль",
     "tip_save": "Сохранить профиль (ключ шифруется DPAPI)",
     "tip_delete": "Удалить текущий профиль",
@@ -69,7 +70,8 @@
     "glyph_es": "Ñ",
     "glyph_theme_light": "☀",
     "glyph_theme_dark": "☾",
-    "glyph_tea": "☕"
+    "glyph_tea": "☕",
+    "glyph_refresh": "⟳"
   },
   "en": {
     "app_title": "ClodKey",
@@ -106,6 +108,7 @@
     "models_none": "No models found on this Base URL",
     "models_ready": "Models OK: {0} · QUOTA: {1} · method: {2}",
     "model_locked": "Model inactive (no quota) - pick an OK one",
+    "tip_refresh": "Re-check the key and refresh the model list",
     "tip_new": "Clear form and create a new profile",
     "tip_save": "Save profile (key encrypted with DPAPI)",
     "tip_delete": "Delete current profile",
@@ -140,7 +143,8 @@
     "glyph_es": "Ñ",
     "glyph_theme_light": "☀",
     "glyph_theme_dark": "☾",
-    "glyph_tea": "☕"
+    "glyph_tea": "☕",
+    "glyph_refresh": "⟳"
   },
   "zh": {
     "app_title": "ClodKey",
@@ -177,6 +181,7 @@
     "models_none": "该 Base URL 未找到模型",
     "models_ready": "模型 OK: {0} · QUOTA: {1} · 方式: {2}",
     "model_locked": "模型不可用（无配额）- 请选择 OK",
+    "tip_refresh": "重新验证密钥并刷新模型列表",
     "tip_new": "清空表单并新建配置",
     "tip_save": "保存配置（密钥使用 DPAPI 加密）",
     "tip_delete": "删除当前配置",
@@ -211,7 +216,8 @@
     "glyph_es": "Ñ",
     "glyph_theme_light": "☀",
     "glyph_theme_dark": "☾",
-    "glyph_tea": "☕"
+    "glyph_tea": "☕",
+    "glyph_refresh": "⟳"
   },
   "es": {
     "app_title": "ClodKey",
@@ -248,6 +254,7 @@
     "models_none": "No hay modelos en este Base URL",
     "models_ready": "Modelos OK: {0} · QUOTA: {1} · método: {2}",
     "model_locked": "Modelo inactivo (sin cuota) - elige uno OK",
+    "tip_refresh": "Vuelve a comprobar la clave y actualiza la lista",
     "tip_new": "Limpiar y crear un perfil",
     "tip_save": "Guardar perfil (clave cifrada con DPAPI)",
     "tip_delete": "Eliminar el perfil actual",
@@ -282,6 +289,7 @@
     "glyph_es": "Ñ",
     "glyph_theme_light": "☀",
     "glyph_theme_dark": "☾",
-    "glyph_tea": "☕"
+    "glyph_tea": "☕",
+    "glyph_refresh": "⟳"
   }
 }

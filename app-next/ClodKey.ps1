@@ -967,17 +967,76 @@ $cmbModel.Font = $fontUi
 $form.Controls.Add($cmbModel)
 Tip $cmbModel 'tip_model'
 
+# neumorphic skin: the native flat combo draws a square button and a
+# hard 1px border - repaint the whole face as a carved inset pill with
+# a hand-drawn chevron, matching the text fields. DrawItem keeps its
+# own styling for the dropdown rows (separate popup window).
+$comboDbProp = $cmbModel.GetType().GetProperty('DoubleBuffered', [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Instance)
+$comboDbProp.SetValue($cmbModel, $true, $null)
+$cmbModel.Add_Paint({
+    param($s, $e)
+    $g = $e.Graphics
+    $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.Clear($script:surface)
+    $r = New-Object Drawing.Rectangle(0, 0, ($cmbModel.Width - 1), ($cmbModel.Height - 1))
+    [ClodUi.Shape]::Inset($g, $r, 13, $script:surface, $script:shadowDark, $script:shadowLight, 4)
+    $cy = [int](($cmbModel.Height - 1) / 2)
+    $cx = $cmbModel.Width - 18
+    $pen = New-Object Drawing.Pen($script:muted, 1.8)
+    $pen.StartCap = [Drawing.Drawing2D.LineCap]::Round
+    $pen.EndCap = [Drawing.Drawing2D.LineCap]::Round
+    $pts = @(
+        [Drawing.PointF]::new(($cx - 4), ($cy - 2)),
+        [Drawing.PointF]::new($cx, ($cy + 3)),
+        [Drawing.PointF]::new(($cx + 4), ($cy - 2))
+    )
+    $g.DrawLines($pen, $pts)
+    $pen.Dispose()
+    # closed face: name + state badge (the native display area is repainted
+    # over, so DrawItem's row styling must be reproduced here)
+    if ($cmbModel.SelectedItem) {
+        $item = $cmbModel.SelectedItem
+        $st = [string]$item.state
+        $badge = Get-ModelBadge $st
+        $bw = [Windows.Forms.TextRenderer]::MeasureText($badge, $fontMicro).Width + 12
+        $fmt = New-Object Drawing.StringFormat
+        $fmt.Trimming = [Drawing.StringTrimming]::EllipsisCharacter
+        $fmt.LineAlignment = [Drawing.StringAlignment]::Center
+        $rect = New-Object Drawing.RectangleF(12, 0, ($cmbModel.Width - 36 - $bw), ($cmbModel.Height - 1))
+        $tb = New-Object Drawing.SolidBrush($script:ink)
+        $g.DrawString([string]$item.id, $fontUi, $tb, $rect, $fmt)
+        $tb.Dispose()
+        $badgeClr = [Drawing.Color]::FromArgb(147, 165, 190)
+        if ($st -eq 'ok') { $badgeClr = [Drawing.Color]::FromArgb(46, 160, 67) }
+        if ($st -eq 'quota') { $badgeClr = [Drawing.Color]::FromArgb(210, 153, 34) }
+        if ($st -eq 'err') { $badgeClr = [Drawing.Color]::FromArgb(218, 54, 54) }
+        $bb = New-Object Drawing.SolidBrush($badgeClr)
+        $g.DrawString($badge, $fontMicro, $bb, ($cmbModel.Width - 24 - $bw + 4), [int](($cmbModel.Height - 12) / 2))
+        $bb.Dispose()
+    }
+})
+
+# manual re-check button (the probe is automatic, but a visible "redo"
+# control was requested): clears the fingerprint guard and relaunches
+$btnRefresh = New-MicroButton (T 'glyph_refresh') 258 322 30 26 $false
+$btnRefresh.Font = $fontGlyph
+Tip $btnRefresh 'tip_refresh'
+$btnRefresh.Add_Click({ $script:ProbeLastFp = $null; Start-ModelProbe })
+
 $script:ProbeId = 0
 $script:ProbeMyId = 0
 $script:ProbePS = $null
 $script:ProbeRS = $null
 $script:ProbeHandle = $null
+$script:ProbeRunning = $false
+$script:ProbeLastFp = $null
 $script:ModelReverting = $false
 $script:LastGoodModelIdx = -1
 
 function Get-ModelBadge([string]$State) {
     if ($State -eq 'ok') { return 'OK' }
     if ($State -eq 'quota') { return 'QUOTA' }
+    if ($State -eq 'pending') { return '...' }
     return 'ERR'
 }
 
@@ -1013,25 +1072,42 @@ $script:ProbeScript = {
         $out.status = 'badkey'
         return $out
     }
+    # The gateway runs a deterministic CONTENT FILTER before the model
+    # (measured in api-test/README.md): literal short strings like "ok"
+    # are rejected even on healthy models, while appending one neutral
+    # nudge sentence rescues 12/12 refused payloads. The old probe body
+    # was exactly such a literal -> false ERR on working models. Ladder:
+    # nudged probe first, one rephrased retry, only then err. 402/429
+    # short-circuits to quota immediately.
     foreach ($id in $ids) {
-        $state = 'err'
-        try {
-            $body = '{"model":"' + $id + '","max_tokens":1,"messages":[{"role":"user","content":"ok"}]}'
-            $null = Invoke-WebRequest -Uri ($Base.TrimEnd('/') + '/v1/messages') -Method POST -Body $body -ContentType 'application/json' -Headers $H -TimeoutSec 12 -UseBasicParsing
-            $state = 'ok'
-        } catch {
-            $code = 0; $msg = ''
+        $state = 'err'; $det = ''
+        $bodies = @(
+            ('{"model":"' + $id + '","max_tokens":8,"messages":[{"role":"user","content":"ok (Please respond to the message above.)"}]}'),
+            ('{"model":"' + $id + '","max_tokens":8,"messages":[{"role":"user","content":"What is 2+2? Reply with just the number."}]}')
+        )
+        foreach ($body in $bodies) {
             try {
-                $resp = $_.Exception.Response
-                if ($resp) {
-                    $code = [int]$resp.StatusCode
-                    $sr = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
-                    $msg = $sr.ReadToEnd(); $sr.Close()
-                }
-            } catch { }
-            if ($code -eq 402 -or $code -eq 429 -or $msg -match 'quota|exhausted|insufficient|billing') { $state = 'quota' }
+                # 30 s, not 12: measured gpt-5.6-sol answers 200 in ~9 s
+                # under a quiet line and blows a 12 s budget under the
+                # sequential probe load -> false ERR (HTTP 0 = timeout)
+                $null = Invoke-WebRequest -Uri ($Base.TrimEnd('/') + '/v1/messages') -Method POST -Body $body -ContentType 'application/json' -Headers $H -TimeoutSec 30 -UseBasicParsing
+                $state = 'ok'; break
+            } catch {
+                $code = 0; $msg = ''
+                try {
+                    $resp = $_.Exception.Response
+                    if ($resp) {
+                        $code = [int]$resp.StatusCode
+                        $sr = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+                        $msg = $sr.ReadToEnd(); $sr.Close()
+                    }
+                } catch { }
+                $det = ('HTTP ' + $code)
+                if ($code -eq 402 -or $code -eq 429 -or $msg -match 'quota|exhausted|insufficient|billing') { $state = 'quota'; break }
+                $state = 'err'
+            }
         }
-        $out.models += @{ id = $id; state = $state }
+        $out.models += @{ id = $id; state = $state; detail = $det }
     }
     return $out
 }
@@ -1040,6 +1116,11 @@ function Start-ModelProbe {
     $base = $txtBase.Text.Trim().TrimEnd('/')
     $key = $txtKey.Text
     if ($key.Length -lt 12 -or $base -notmatch '^https?://') { return }
+    # fingerprint guard: boot probe + TextChanged debounce must not launch
+    # the same check twice
+    $fp = $base + '|' + $key
+    if ($script:ProbeRunning -and $fp -eq $script:ProbeLastFp) { return }
+    $script:ProbeLastFp = $fp
     if ($script:ProbePS) {
         try { $script:ProbePS.Stop() } catch { }
         try { $script:ProbePS.Dispose() } catch { }
@@ -1054,6 +1135,10 @@ function Start-ModelProbe {
     $script:ProbePS.Runspace = $script:ProbeRS
     [void]$script:ProbePS.AddScript($script:ProbeScript).AddArgument($base).AddArgument($key)
     $script:ProbeHandle = $script:ProbePS.BeginInvoke()
+    $script:ProbeRunning = $true
+    $script:ProgTick = 0
+    $pnlProgress.Visible = $true
+    $script:ProgTimer.Start()
     Set-Status (T 'models_loading')
     $script:ProbeTimer.Start()
 }
@@ -1068,7 +1153,10 @@ $script:ProbeTimer.Add_Tick({
     try { $script:ProbePS.Dispose() } catch { }
     try { $script:ProbeRS.Dispose() } catch { }
     $script:ProbePS = $null; $script:ProbeRS = $null; $script:ProbeHandle = $null
-    if ($script:ProbeId -ne $script:ProbeMyId) { return }   # stale result
+    if ($script:ProbeId -ne $script:ProbeMyId) { return }   # stale: newer probe owns the UI
+    $script:ProbeRunning = $false
+    $script:ProgTimer.Stop()
+    $pnlProgress.Visible = $false
     if (-not $res -or @($res).Count -lt 1) { return }
     $data = @($res)[0]
     if ([string]$data.status -eq 'badkey') {
@@ -1077,14 +1165,15 @@ $script:ProbeTimer.Add_Tick({
         Set-Status (T 'models_badkey')
         return
     }
-    # detected auth method: select the segment and pulse it green
+    # detected auth method: select the segment and keep it glowing green
+    # until the user picks a mode manually
     $authLbl = ''
     if ($data.authApi -and $data.authBearer) {
-        Set-Mode 'both'; Flash-Green $segBoth; $authLbl = (T 'seg_both')
+        Set-Mode 'both'; Start-Glow $segBoth; $authLbl = (T 'seg_both')
     } elseif ($data.authApi) {
-        Set-Mode 'api_key'; Flash-Green $segApi; $authLbl = (T 'seg_api')
+        Set-Mode 'api_key'; Start-Glow $segApi; $authLbl = (T 'seg_api')
     } elseif ($data.authBearer) {
-        Set-Mode 'auth_token'; Flash-Green $segToken; $authLbl = (T 'seg_token')
+        Set-Mode 'auth_token'; Start-Glow $segToken; $authLbl = (T 'seg_token')
     }
     $script:DetectedAuth = $authLbl
     $prev = $null
@@ -1094,6 +1183,9 @@ $script:ProbeTimer.Add_Tick({
     $okN = 0; $qN = 0
     foreach ($m in @($data.models)) {
         $obj = [pscustomobject]@{ id = [string]$m.id; state = [string]$m.state }
+        # per-model verdict + HTTP detail into the log: validates the
+        # content-filter diagnosis for any future false ERR
+        Write-Log 'info' ('probe: ' + [string]$m.id + ' = ' + [string]$m.state + ' ' + [string]$m.detail)
         $i = $cmbModel.Items.Add($obj)
         if ($obj.state -eq 'ok') {
             $okN++
@@ -1118,27 +1210,28 @@ $script:ProbeTimer.Add_Tick({
     Set-Status ((T 'models_ready') -f $okN, $qN, $script:DetectedAuth)
 })
 
-# green success pulse on the detected auth segment (3 beats, ~600 ms)
-$script:FlashTarget = $null
-$script:FlashStep = 0
-$script:FlashTimer = New-Object Windows.Forms.Timer
-$script:FlashTimer.Interval = 40
-$script:FlashTimer.Add_Tick({
-    $script:FlashStep++
-    $t = $script:FlashStep / 15.0
-    if ($t -ge 1.0 -or -not $script:FlashTarget) {
-        $script:FlashTimer.Stop()
-        if ($script:FlashTarget) { $script:FlashTarget.Good = 0; $script:FlashTarget.Invalidate() }
-        return
-    }
-    $script:FlashTarget.Good = [Math]::Abs([Math]::Sin($t * [Math]::PI * 3)) * (1.0 - $t)
-    $script:FlashTarget.Invalidate()
+# persistent green glow on the detected auth segment: breathes forever
+# until the user clicks ANY mode manually (Set-Mode calls Stop-Glow)
+$script:GlowTarget = $null
+$script:GlowPhase = 0
+$script:GlowTimer = New-Object Windows.Forms.Timer
+$script:GlowTimer.Interval = 40
+$script:GlowTimer.Add_Tick({
+    if (-not $script:GlowTarget) { $script:GlowTimer.Stop(); return }
+    $script:GlowPhase = ($script:GlowPhase + 1)
+    $script:GlowTarget.Good = 0.30 + 0.22 * [Math]::Sin(($script:GlowPhase / 14.0) * [Math]::PI * 2.0)
+    $script:GlowTarget.Invalidate()
 })
-function Flash-Green($btn) {
+function Start-Glow($btn) {
     if (-not $btn) { return }
-    $script:FlashTarget = $btn
-    $script:FlashStep = 0
-    $script:FlashTimer.Start()
+    $script:GlowTarget = $btn
+    $script:GlowPhase = 0
+    $script:GlowTimer.Start()
+}
+function Stop-Glow {
+    $script:GlowTimer.Stop()
+    if ($script:GlowTarget) { $script:GlowTarget.Good = 0; $script:GlowTarget.Invalidate() }
+    $script:GlowTarget = $null
 }
 
 # debounce: probe ~0.9 s after the last key/base keystroke
@@ -1148,6 +1241,45 @@ $script:KeyTimer.Add_Tick({ $script:KeyTimer.Stop(); Start-ModelProbe })
 $txtKey.Add_TextChanged({ $script:KeyTimer.Stop(); $script:KeyTimer.Start() })
 $txtBase.Add_TextChanged({ $script:KeyTimer.Stop(); $script:KeyTimer.Start() })
 
+# ---------- progress strip: marquee while a probe runs ----------
+# The check takes 10-30 s (auth detection + per-model probes); without a
+# live indicator the window looks frozen. Thin inset track + moving accent
+# segment, visible only during probing.
+$pnlProgress = New-Object Windows.Forms.Panel
+$pnlProgress.BackColor = $script:surface
+$pnlProgress.Size = New-Object Drawing.Size(276, 6)
+$pnlProgress.Visible = $false
+$form.Controls.Add($pnlProgress)
+$script:ProgTick = 0
+$script:ProgTimer = New-Object Windows.Forms.Timer
+$script:ProgTimer.Interval = 30
+$script:ProgTimer.Add_Tick({
+    $script:ProgTick = ($script:ProgTick + 1) % 40
+    $pnlProgress.Invalidate()
+})
+$pnlProgress.Add_Paint({
+    param($s, $e)
+    $g = $e.Graphics
+    $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.Clear($script:surface)
+    $w = $pnlProgress.Width; $h = $pnlProgress.Height
+    $rad = [int]($h / 2)
+    $track = New-Object Drawing.Rectangle(0, 0, $w, $h)
+    $pathT = [ClodUi.Shape]::Round($track, $rad)
+    $brT = New-Object Drawing.SolidBrush($script:borderClr)
+    $g.FillPath($brT, $pathT)
+    $brT.Dispose(); $pathT.Dispose()
+    $segW = [int]($w * 0.28)
+    if ($segW -lt 8) { $segW = 8 }
+    $t = $script:ProgTick / 40.0
+    $x = [int]((($w + $segW) * $t) - $segW)
+    $seg = New-Object Drawing.Rectangle($x, 0, $segW, $h)
+    $pathS = [ClodUi.Shape]::Round($seg, $rad)
+    $brS = New-Object Drawing.SolidBrush($script:accentClr)
+    $g.FillPath($brS, $pathS)
+    $brS.Dispose(); $pathS.Dispose()
+})
+
 # owner-draw rows: name + status badge; non-ok rows grayed
 $cmbModel.Add_DrawItem({
     param($s, $e)
@@ -1155,29 +1287,38 @@ $cmbModel.Add_DrawItem({
     $g = $e.Graphics
     $item = $cmbModel.Items[$e.Index]
     $st = [string]$item.state
-    $sel = ($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0
+    # DrawItemState.Selected is set for the EDIT row too (ComboBoxEdit) and
+    # for hover; the old code turned those rows white-on-white. Only a real
+    # list selection (hot) gets the accent pill + white text.
+    $sel = (($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0) -and `
+           (($e.State -band [Windows.Forms.DrawItemState]::ComboBoxEdit) -eq 0)
+    # neumorphic popup rows: explicit surface fill (Clear can miss the
+    # native white popup backing), selected row = inset accent pill
+    $brBg = New-Object Drawing.SolidBrush($script:surface)
+    $g.FillRectangle($brBg, $e.Bounds)
+    $brBg.Dispose()
     if ($sel) {
-        $br = New-Object Drawing.SolidBrush($script:accentClr)
-        $g.FillRectangle($br, $e.Bounds)
-        $br.Dispose()
-    } else {
-        $g.Clear($script:surface)
+        $pr = New-Object Drawing.Rectangle(3, ($e.Bounds.Y + 1), ($e.Bounds.Width - 7), ($e.Bounds.Height - 3))
+        [ClodUi.Shape]::Inset($g, $pr, 9, $script:accentClr, $script:shadowDark, $script:shadowLight, 3)
     }
     $badge = Get-ModelBadge $st
     $bw = [Windows.Forms.TextRenderer]::MeasureText($badge, $fontMicro).Width + 12
     $fmt = New-Object Drawing.StringFormat
     $fmt.Trimming = [Drawing.StringTrimming]::EllipsisCharacter
     $fmt.LineAlignment = [Drawing.StringAlignment]::Center
-    $nameClr = $muted
-    if ($st -eq 'ok') { $nameClr = $ink }
+    # readability first: names are ALWAYS ink. The old muted-on-surface
+    # for pending/quota/err rows read as white-on-white (reported); the
+    # state is carried by the badge color alone.
+    $nameClr = $ink
     if ($sel) { $nameClr = [Drawing.Color]::White }
     $rect = New-Object Drawing.RectangleF(($e.Bounds.X + 8), $e.Bounds.Y, ($e.Bounds.Width - 16 - $bw), $e.Bounds.Height)
     $tb = New-Object Drawing.SolidBrush($nameClr)
     $g.DrawString([string]$item.id, $fontUi, $tb, $rect, $fmt)
     $tb.Dispose()
-    $badgeClr = [Drawing.Color]::FromArgb(210, 153, 34)      # quota: amber
+    $badgeClr = [Drawing.Color]::FromArgb(147, 165, 190)                        # pending: gray
     if ($st -eq 'ok') { $badgeClr = [Drawing.Color]::FromArgb(46, 160, 67) }   # ok: green
-    if ($st -eq 'err') { $badgeClr = $muted }
+    if ($st -eq 'quota') { $badgeClr = [Drawing.Color]::FromArgb(210, 153, 34) } # quota: amber
+    if ($st -eq 'err') { $badgeClr = [Drawing.Color]::FromArgb(218, 54, 54) }  # err: red
     if ($sel) { $badgeClr = [Drawing.Color]::White }
     $bb = New-Object Drawing.SolidBrush($badgeClr)
     $g.DrawString($badge, $fontMicro, $bb, ($e.Bounds.Right - 8 - $bw + 4), ($e.Bounds.Y + [int](($e.Bounds.Height - 12) / 2)))
@@ -1227,6 +1368,9 @@ $segToken = New-MicroButton (T 'seg_token') 104 340 90 26 $false
 $segBoth  = New-MicroButton (T 'seg_both')  198 340 90 26 $false
 $script:Mode = 'both'
 function Set-Mode([string]$M) {
+    # any mode change (manual click or profile load) kills the detection
+    # glow; the probe re-arms it right after via Start-Glow
+    Stop-Glow
     $script:Mode = $M
     $segApi.Selected   = ($M -eq 'api_key')
     $segToken.Selected = ($M -eq 'auth_token')
@@ -1343,12 +1487,21 @@ function Do-Layout {
     $btnEye.Radius = [int](($fieldH - 10) / 2)
     $btnEye.Location = New-Object Drawing.Point(($pad + $fw - $eyeW), $y)
     $y += $fieldH + 8
-    # model dropdown: label + carved combo (probed live from key+base)
-    $lblModel.Location = New-Object Drawing.Point($pad, $y)
-    $y += $microH + 3
+    # model dropdown: label row with the refresh button at its far right
+    # (user: place it to the right of the model block), full-width combo,
+    # progress strip below (visible only while a probe runs)
+    $refH = 22
+    $lblModel.Location = New-Object Drawing.Point($pad, ($y + [int](($refH - $microH) / 2)))
+    $btnRefresh.Size = New-Object Drawing.Size($refH, $refH)
+    $btnRefresh.Radius = [int](($refH - 6) / 2)
+    $btnRefresh.Location = New-Object Drawing.Point(($W - $pad - $refH), $y)
+    $y += [Math]::Max($microH, $refH) + 3
     $cmbModel.Location = New-Object Drawing.Point($pad, $y)
     $cmbModel.Size = New-Object Drawing.Size($fw, 26)
-    $y += 26 + 8
+    $y += 26 + 5
+    $pnlProgress.Location = New-Object Drawing.Point($pad, $y)
+    $pnlProgress.Size = New-Object Drawing.Size($fw, 6)
+    $y += 6 + 6
     # auth mode: three equal segments
     $lblMode.Location = New-Object Drawing.Point($pad, $y)
     $y += $microH + 3
@@ -1463,6 +1616,7 @@ function Apply-Theme {
     $cmbModel.BackColor = $script:surface
     $cmbModel.ForeColor = $script:ink
     $cmbModel.Invalidate()
+    $pnlProgress.Invalidate()
     foreach ($tb in $script:Fields) {
         $tb.BackColor = $script:surface
         $tb.ForeColor = $script:ink
@@ -1510,6 +1664,7 @@ function Apply-Language {
     Tip $btnTheme 'tip_theme'; Tip $btnTea 'tip_tea'; Tip $btnClose 'tip_close'
     Tip $btnImport 'tip_import'; Tip $btnEye 'tip_eye'
     Tip $cmbModel 'tip_model'
+    Tip $btnRefresh 'tip_refresh'
     Tip $btnNew 'tip_new'; Tip $btnSave 'tip_save'; Tip $btnDelete 'tip_delete'; Tip $btnCopy 'tip_copy'
     Tip $btnApply 'tip_apply'
     # tray menu + tooltip
@@ -1786,6 +1941,10 @@ if ($lv.Items.Count -gt 0) {
 }
 Set-Status (T 'status_ready')
 Do-Layout
+# startup probe: same automatic check as on paste. The TextChanged debounce
+# may already have armed a probe; the fingerprint guard prevents a double
+# launch of the identical base+key.
+if ($txtKey.Text.Length -ge 12 -and $txtBase.Text -match '^https?://') { Start-ModelProbe }
 
 if ($SelfTest) {
     # every tray action has a CLI twin (GOLD: clicks are untestable, commands are)
@@ -1872,7 +2031,8 @@ if ($SelfTest) {
             @($lvWell, $lblName), @($lblName, $pnlName),
             @($pnlName, $lblBase), @($pnlBase, $lblKey),
             @($lblKey, $pnlKey), @($pnlKey, $lblModel),
-            @($lblModel, $cmbModel), @($cmbModel, $lblMode),
+            @($lblModel, $cmbModel), @($cmbModel, $pnlProgress),
+            @($pnlProgress, $lblMode),
             @($lblMode, $segApi), @($segApi, $btnNew),
             @($btnNew, $btnApply), @($btnApply, $lblStatus)
         )
