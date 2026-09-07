@@ -247,6 +247,7 @@ namespace ClodUi {
         public Color AccentText = Color.White;
         public bool Accent = false;
         public bool Selected = false;
+        public float Good = 0f;   // 0..1 green success pulse overlay
         private bool _down = false;
         private bool _over = false;
         public ClodButton() {
@@ -286,6 +287,16 @@ namespace ClodUi {
             TextRenderer.DrawText(g, Text, Font, new Rectangle(0, _down ? 1 : 0, Width, Height), tc,
                 Color.Transparent,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+            if (Good > 0f) {
+                // success pulse: green wash + brighter ring, alpha = Good
+                int a = (int)(Good * 130);
+                using (var p = Shape.Round(pill, rad))
+                using (var br = new SolidBrush(Color.FromArgb(a, 46, 160, 67)))
+                    g.FillPath(br, p);
+                using (var p = Shape.Round(pill, rad))
+                using (var pen = new Pen(Color.FromArgb((int)(Good * 220), 60, 200, 90), 2f))
+                    g.DrawPath(pen, p);
+            }
         }
     }
 }
@@ -614,6 +625,13 @@ function Apply-ToClaudeCli($Prof) {
         Set-Prop $e 'ANTHROPIC_API_KEY' $keyPlain
         Set-Prop $e 'ANTHROPIC_AUTH_TOKEN' $keyPlain
     }
+    # model pin: the profile fully describes the env block - a profile
+    # without a model REMOVES the pin (CLI falls back to its default)
+    if ($Prof.PSObject.Properties.Name -contains 'model' -and [string]$Prof.model) {
+        Set-Prop $e 'ANTHROPIC_MODEL' ([string]$Prof.model)
+    } else {
+        Remove-Prop $e 'ANTHROPIC_MODEL'
+    }
 
     Invoke-WithRetry {
         if (Test-Path -LiteralPath $path) {
@@ -936,6 +954,272 @@ $btnEye = New-MicroButton (T 'eye_open') 258 290 32 28 $false
 $btnEye.Font = New-UiFont 9.0 $false
 Tip $btnEye 'tip_eye'
 
+# ---------- model dropdown: probed live from base url + key ----------
+$lblModel = New-MicroLabel (T 'lbl_model') 14 322
+$cmbModel = New-Object Windows.Forms.ComboBox
+$cmbModel.DropDownStyle = 'DropDownList'
+$cmbModel.DrawMode = 'OwnerDrawFixed'
+$cmbModel.ItemHeight = 24
+$cmbModel.FlatStyle = 'Flat'
+$cmbModel.BackColor = $script:surface
+$cmbModel.ForeColor = $script:ink
+$cmbModel.Font = $fontUi
+$form.Controls.Add($cmbModel)
+Tip $cmbModel 'tip_model'
+
+$script:ProbeId = 0
+$script:ProbeMyId = 0
+$script:ProbePS = $null
+$script:ProbeRS = $null
+$script:ProbeHandle = $null
+$script:ModelReverting = $false
+$script:LastGoodModelIdx = -1
+
+function Get-ModelBadge([string]$State) {
+    if ($State -eq 'ok') { return 'OK' }
+    if ($State -eq 'quota') { return 'QUOTA' }
+    return 'ERR'
+}
+
+# self-contained: runs in a background MTA runspace, returns a hashtable
+# { status = ok|badkey; models = @( @{id;state}, ... ) }. Classification:
+# 200 -> ok; 402/429 or quota-ish body -> quota; anything else -> err.
+$script:ProbeScript = {
+    param($Base, $Key)
+    $ErrorActionPreference = 'Stop'
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $UA = 'claude-cli/1.0.83 (external, cli)'
+    $H = @{ Authorization = ('Bearer ' + $Key); 'x-api-key' = $Key; 'User-Agent' = $UA; 'anthropic-version' = '2023-06-01' }
+    $out = @{ status = 'ok'; models = @(); authApi = $false; authBearer = $false }
+    # auth method detection: which single header does the gateway accept?
+    # /v1/models is free (no quota), so two extra probes cost nothing.
+    try {
+        $null = Invoke-WebRequest -Uri ($Base.TrimEnd('/') + '/v1/models') -Headers @{ 'x-api-key' = $Key; 'User-Agent' = $UA } -TimeoutSec 10 -UseBasicParsing
+        $out.authApi = $true
+    } catch { }
+    try {
+        $null = Invoke-WebRequest -Uri ($Base.TrimEnd('/') + '/v1/models') -Headers @{ 'Authorization' = ('Bearer ' + $Key); 'User-Agent' = $UA } -TimeoutSec 10 -UseBasicParsing
+        $out.authBearer = $true
+    } catch { }
+    if (-not $out.authApi -and -not $out.authBearer) {
+        $out.status = 'badkey'
+        return $out
+    }
+    try {
+        $r = Invoke-WebRequest -Uri ($Base.TrimEnd('/') + '/v1/models') -Headers $H -TimeoutSec 12 -UseBasicParsing
+        $d = $r.Content | ConvertFrom-Json
+        $ids = @($d.data | ForEach-Object { [string]$_.id } | Where-Object { $_ } | Select-Object -First 8)
+    } catch {
+        $out.status = 'badkey'
+        return $out
+    }
+    foreach ($id in $ids) {
+        $state = 'err'
+        try {
+            $body = '{"model":"' + $id + '","max_tokens":1,"messages":[{"role":"user","content":"ok"}]}'
+            $null = Invoke-WebRequest -Uri ($Base.TrimEnd('/') + '/v1/messages') -Method POST -Body $body -ContentType 'application/json' -Headers $H -TimeoutSec 12 -UseBasicParsing
+            $state = 'ok'
+        } catch {
+            $code = 0; $msg = ''
+            try {
+                $resp = $_.Exception.Response
+                if ($resp) {
+                    $code = [int]$resp.StatusCode
+                    $sr = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+                    $msg = $sr.ReadToEnd(); $sr.Close()
+                }
+            } catch { }
+            if ($code -eq 402 -or $code -eq 429 -or $msg -match 'quota|exhausted|insufficient|billing') { $state = 'quota' }
+        }
+        $out.models += @{ id = $id; state = $state }
+    }
+    return $out
+}
+
+function Start-ModelProbe {
+    $base = $txtBase.Text.Trim().TrimEnd('/')
+    $key = $txtKey.Text
+    if ($key.Length -lt 12 -or $base -notmatch '^https?://') { return }
+    if ($script:ProbePS) {
+        try { $script:ProbePS.Stop() } catch { }
+        try { $script:ProbePS.Dispose() } catch { }
+        try { $script:ProbeRS.Dispose() } catch { }
+    }
+    $script:ProbeId++
+    $script:ProbeMyId = $script:ProbeId
+    $script:ProbeRS = [runspacefactory]::CreateRunspace()
+    $script:ProbeRS.ApartmentState = 'MTA'
+    $script:ProbeRS.Open()
+    $script:ProbePS = [PowerShell]::Create()
+    $script:ProbePS.Runspace = $script:ProbeRS
+    [void]$script:ProbePS.AddScript($script:ProbeScript).AddArgument($base).AddArgument($key)
+    $script:ProbeHandle = $script:ProbePS.BeginInvoke()
+    Set-Status (T 'models_loading')
+    $script:ProbeTimer.Start()
+}
+
+$script:ProbeTimer = New-Object Windows.Forms.Timer
+$script:ProbeTimer.Interval = 250
+$script:ProbeTimer.Add_Tick({
+    if (-not $script:ProbeHandle -or -not $script:ProbeHandle.IsCompleted) { return }
+    $script:ProbeTimer.Stop()
+    $res = $null
+    try { $res = $script:ProbePS.EndInvoke($script:ProbeHandle) } catch { }
+    try { $script:ProbePS.Dispose() } catch { }
+    try { $script:ProbeRS.Dispose() } catch { }
+    $script:ProbePS = $null; $script:ProbeRS = $null; $script:ProbeHandle = $null
+    if ($script:ProbeId -ne $script:ProbeMyId) { return }   # stale result
+    if (-not $res -or @($res).Count -lt 1) { return }
+    $data = @($res)[0]
+    if ([string]$data.status -eq 'badkey') {
+        $cmbModel.Items.Clear()
+        $script:LastGoodModelIdx = -1
+        Set-Status (T 'models_badkey')
+        return
+    }
+    # detected auth method: select the segment and pulse it green
+    $authLbl = ''
+    if ($data.authApi -and $data.authBearer) {
+        Set-Mode 'both'; Flash-Green $segBoth; $authLbl = (T 'seg_both')
+    } elseif ($data.authApi) {
+        Set-Mode 'api_key'; Flash-Green $segApi; $authLbl = (T 'seg_api')
+    } elseif ($data.authBearer) {
+        Set-Mode 'auth_token'; Flash-Green $segToken; $authLbl = (T 'seg_token')
+    }
+    $script:DetectedAuth = $authLbl
+    $prev = $null
+    if ($cmbModel.SelectedItem) { $prev = [string]$cmbModel.SelectedItem.id }
+    $cmbModel.Items.Clear()
+    $script:LastGoodModelIdx = -1
+    $okN = 0; $qN = 0
+    foreach ($m in @($data.models)) {
+        $obj = [pscustomobject]@{ id = [string]$m.id; state = [string]$m.state }
+        $i = $cmbModel.Items.Add($obj)
+        if ($obj.state -eq 'ok') {
+            $okN++
+            if ($script:LastGoodModelIdx -lt 0) { $script:LastGoodModelIdx = $i }
+        } elseif ($obj.state -eq 'quota') { $qN++ }
+    }
+    if ($cmbModel.Items.Count -eq 0) { Set-Status (T 'models_none'); return }
+    $script:DetectedAuth = $authLbl
+    $target = -1
+    if ($prev) {
+        for ($i = 0; $i -lt $cmbModel.Items.Count; $i++) {
+            if ($cmbModel.Items[$i].id -eq $prev -and $cmbModel.Items[$i].state -eq 'ok') { $target = $i; break }
+        }
+    }
+    if ($target -lt 0) { $target = $script:LastGoodModelIdx }
+    if ($target -ge 0) {
+        $script:ModelReverting = $true
+        $cmbModel.SelectedIndex = $target
+        $script:ModelReverting = $false
+        $script:LastGoodModelIdx = $target
+    }
+    Set-Status ((T 'models_ready') -f $okN, $qN, $script:DetectedAuth)
+})
+
+# green success pulse on the detected auth segment (3 beats, ~600 ms)
+$script:FlashTarget = $null
+$script:FlashStep = 0
+$script:FlashTimer = New-Object Windows.Forms.Timer
+$script:FlashTimer.Interval = 40
+$script:FlashTimer.Add_Tick({
+    $script:FlashStep++
+    $t = $script:FlashStep / 15.0
+    if ($t -ge 1.0 -or -not $script:FlashTarget) {
+        $script:FlashTimer.Stop()
+        if ($script:FlashTarget) { $script:FlashTarget.Good = 0; $script:FlashTarget.Invalidate() }
+        return
+    }
+    $script:FlashTarget.Good = [Math]::Abs([Math]::Sin($t * [Math]::PI * 3)) * (1.0 - $t)
+    $script:FlashTarget.Invalidate()
+})
+function Flash-Green($btn) {
+    if (-not $btn) { return }
+    $script:FlashTarget = $btn
+    $script:FlashStep = 0
+    $script:FlashTimer.Start()
+}
+
+# debounce: probe ~0.9 s after the last key/base keystroke
+$script:KeyTimer = New-Object Windows.Forms.Timer
+$script:KeyTimer.Interval = 900
+$script:KeyTimer.Add_Tick({ $script:KeyTimer.Stop(); Start-ModelProbe })
+$txtKey.Add_TextChanged({ $script:KeyTimer.Stop(); $script:KeyTimer.Start() })
+$txtBase.Add_TextChanged({ $script:KeyTimer.Stop(); $script:KeyTimer.Start() })
+
+# owner-draw rows: name + status badge; non-ok rows grayed
+$cmbModel.Add_DrawItem({
+    param($s, $e)
+    if ($e.Index -lt 0) { return }
+    $g = $e.Graphics
+    $item = $cmbModel.Items[$e.Index]
+    $st = [string]$item.state
+    $sel = ($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0
+    if ($sel) {
+        $br = New-Object Drawing.SolidBrush($script:accentClr)
+        $g.FillRectangle($br, $e.Bounds)
+        $br.Dispose()
+    } else {
+        $g.Clear($script:surface)
+    }
+    $badge = Get-ModelBadge $st
+    $bw = [Windows.Forms.TextRenderer]::MeasureText($badge, $fontMicro).Width + 12
+    $fmt = New-Object Drawing.StringFormat
+    $fmt.Trimming = [Drawing.StringTrimming]::EllipsisCharacter
+    $fmt.LineAlignment = [Drawing.StringAlignment]::Center
+    $nameClr = $muted
+    if ($st -eq 'ok') { $nameClr = $ink }
+    if ($sel) { $nameClr = [Drawing.Color]::White }
+    $rect = New-Object Drawing.RectangleF(($e.Bounds.X + 8), $e.Bounds.Y, ($e.Bounds.Width - 16 - $bw), $e.Bounds.Height)
+    $tb = New-Object Drawing.SolidBrush($nameClr)
+    $g.DrawString([string]$item.id, $fontUi, $tb, $rect, $fmt)
+    $tb.Dispose()
+    $badgeClr = [Drawing.Color]::FromArgb(210, 153, 34)      # quota: amber
+    if ($st -eq 'ok') { $badgeClr = [Drawing.Color]::FromArgb(46, 160, 67) }   # ok: green
+    if ($st -eq 'err') { $badgeClr = $muted }
+    if ($sel) { $badgeClr = [Drawing.Color]::White }
+    $bb = New-Object Drawing.SolidBrush($badgeClr)
+    $g.DrawString($badge, $fontMicro, $bb, ($e.Bounds.Right - 8 - $bw + 4), ($e.Bounds.Y + [int](($e.Bounds.Height - 12) / 2)))
+    $bb.Dispose()
+})
+
+# quota/err models are NOT selectable: revert to the last good one
+$cmbModel.Add_SelectedIndexChanged({
+    if ($script:ModelReverting) { return }
+    $idx = $cmbModel.SelectedIndex
+    if ($idx -lt 0) { return }
+    $item = $cmbModel.Items[$idx]
+    if ([string]$item.state -ne 'ok') {
+        Set-Status (T 'model_locked')
+        $script:ModelReverting = $true
+        $cmbModel.SelectedIndex = $script:LastGoodModelIdx
+        $script:ModelReverting = $false
+    } else {
+        $script:LastGoodModelIdx = $idx
+    }
+})
+
+function Select-ModelOrAdd([string]$Id) {
+    $script:ModelReverting = $true
+    try {
+        if (-not $Id) { $cmbModel.SelectedIndex = -1; $script:LastGoodModelIdx = -1; return }
+        for ($i = 0; $i -lt $cmbModel.Items.Count; $i++) {
+            if ($cmbModel.Items[$i].id -eq $Id) {
+                $cmbModel.SelectedIndex = $i
+                if ($cmbModel.Items[$i].state -eq 'ok') { $script:LastGoodModelIdx = $i }
+                return
+            }
+        }
+        $obj = [pscustomobject]@{ id = $Id; state = 'ok' }
+        $i = $cmbModel.Items.Add($obj)
+        $cmbModel.SelectedIndex = $i
+        $script:LastGoodModelIdx = $i
+    } finally {
+        $script:ModelReverting = $false
+    }
+}
+
 # ---------- auth mode: segmented micro-control ----------
 $lblMode = New-MicroLabel (T 'lbl_mode') 14 322
 $segApi   = New-MicroButton (T 'seg_api')   10 340 90 26 $false
@@ -1059,6 +1343,12 @@ function Do-Layout {
     $btnEye.Radius = [int](($fieldH - 10) / 2)
     $btnEye.Location = New-Object Drawing.Point(($pad + $fw - $eyeW), $y)
     $y += $fieldH + 8
+    # model dropdown: label + carved combo (probed live from key+base)
+    $lblModel.Location = New-Object Drawing.Point($pad, $y)
+    $y += $microH + 3
+    $cmbModel.Location = New-Object Drawing.Point($pad, $y)
+    $cmbModel.Size = New-Object Drawing.Size($fw, 26)
+    $y += 26 + 8
     # auth mode: three equal segments
     $lblMode.Location = New-Object Drawing.Point($pad, $y)
     $y += $microH + 3
@@ -1170,6 +1460,9 @@ function Apply-Theme {
     $lv.BackColor = $script:surface
     $lv.ForeColor = $script:ink
     $lv.Invalidate()
+    $cmbModel.BackColor = $script:surface
+    $cmbModel.ForeColor = $script:ink
+    $cmbModel.Invalidate()
     foreach ($tb in $script:Fields) {
         $tb.BackColor = $script:surface
         $tb.ForeColor = $script:ink
@@ -1194,6 +1487,7 @@ function Apply-Language {
     $lblName.Text = T 'lbl_name'
     $lblBase.Text = T 'lbl_base'
     $lblKey.Text = T 'lbl_key'
+    $lblModel.Text = T 'lbl_model'
     $lblMode.Text = T 'lbl_mode'
     $btnImport.Text = T 'btn_import'
     $lv.Columns[0].Text = T 'col_name'
@@ -1215,6 +1509,7 @@ function Apply-Language {
     Tip $btnLangRu 'tip_lang'; Tip $btnLangEn 'tip_lang'; Tip $btnLangZh 'tip_lang'; Tip $btnLangEs 'tip_lang'
     Tip $btnTheme 'tip_theme'; Tip $btnTea 'tip_tea'; Tip $btnClose 'tip_close'
     Tip $btnImport 'tip_import'; Tip $btnEye 'tip_eye'
+    Tip $cmbModel 'tip_model'
     Tip $btnNew 'tip_new'; Tip $btnSave 'tip_save'; Tip $btnDelete 'tip_delete'; Tip $btnCopy 'tip_copy'
     Tip $btnApply 'tip_apply'
     # tray menu + tooltip
@@ -1324,6 +1619,9 @@ function Load-IntoFields($Prof) {
         Set-Status (T 'dpapi_fail')
     }
     Set-Mode ([string]$Prof.authMode)
+    $m = ''
+    if ($Prof.PSObject.Properties.Name -contains 'model') { $m = [string]$Prof.model }
+    Select-ModelOrAdd $m
 }
 
 $lv.Add_SelectedIndexChanged({
@@ -1352,6 +1650,11 @@ $btnNew.Add_Click({
     $lv.SelectedIndices.Clear()
     $txtName.Text = ''; $txtBase.Text = ''; $txtKey.Text = ''
     Set-Mode 'both'
+    $script:ModelReverting = $true
+    $cmbModel.Items.Clear()
+    $cmbModel.SelectedIndex = -1
+    $script:LastGoodModelIdx = -1
+    $script:ModelReverting = $false
     [void]$txtName.Focus()
 })
 
@@ -1369,6 +1672,7 @@ $btnSave.Add_Click({
         baseUrl   = $base
         apiKey    = (Protect-String $key)
         authMode  = $script:Mode
+        model     = $(if ($cmbModel.SelectedItem) { [string]$cmbModel.SelectedItem.id } else { '' })
         updatedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     }
     $profiles = @($script:Store.profiles)
@@ -1567,7 +1871,8 @@ if ($SelfTest) {
             @($lblDot, $lblProfiles), @($lblProfiles, $lvWell),
             @($lvWell, $lblName), @($lblName, $pnlName),
             @($pnlName, $lblBase), @($pnlBase, $lblKey),
-            @($lblKey, $pnlKey), @($pnlKey, $lblMode),
+            @($lblKey, $pnlKey), @($pnlKey, $lblModel),
+            @($lblModel, $cmbModel), @($cmbModel, $lblMode),
             @($lblMode, $segApi), @($segApi, $btnNew),
             @($btnNew, $btnApply), @($btnApply, $lblStatus)
         )
