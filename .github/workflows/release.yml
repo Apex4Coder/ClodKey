@@ -1,4 +1,4 @@
-﻿name: Release
+name: Release
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
     name: Package zip + GitHub Release
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Run gates before packaging
         shell: pwsh
@@ -35,7 +35,7 @@ jobs:
           Get-ChildItem dist | ForEach-Object { Write-Host $_.FullName }
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.zip
           generate_release_notes: true
