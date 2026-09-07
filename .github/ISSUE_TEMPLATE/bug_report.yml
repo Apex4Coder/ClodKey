@@ -1,0 +1,95 @@
+name: "\U0001F41E Bug report"
+description: File a bug report. ClodKey is a single-file PowerShell app - the more precise the repro, the faster the fix.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+        Before you start: run `powershell -File check-g22.ps1` and
+        `powershell -STA -File live\ClodKey.ps1 -SelfTest` and paste their output below.
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Is there an existing issue for this?
+      description: Please search to see if an issue already exists for the bug you encountered.
+      options:
+        - label: I have searched the existing issues
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the app is affected?
+      multiple: false
+      options:
+        - tray / flyout (window, animation, theme, language)
+        - profiles / fields (name, base url, key, mask, eye)
+        - secrets / DPAPI (data\secrets.json)
+        - apply to Claude CLI (~/.claude/settings.json)
+        - system import (env vars / settings.json discovery)
+        - launch / console (run-hidden.vbs, start-clodkey.bat)
+        - deploy (deploy.ps1, next -> live)
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A concise description of what you're experiencing.
+      placeholder: Tell us what you see!
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: A concise description of what you expected to happen.
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps from a fresh start.
+      placeholder: |
+        1. Run live\run-hidden.vbs
+        2. Click tray icon
+        3. Switch language to EN
+        4. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste the tail of logs\clodkey.log and the output of -SelfTest / check-g22.ps1. This will be automatically formatted into code.
+      render: shell
+  - type: dropdown
+    id: os
+    attributes:
+      label: Windows version
+      options:
+        - Windows 11 24H2+
+        - Windows 11 23H2
+        - Windows 10 22H2
+        - Windows Server
+        - other
+    validations:
+      required: true
+  - type: input
+    id: dpi
+    attributes:
+      label: Display scaling (DPI)
+      description: Settings > Display > Scale. Layout bugs are DPI-sensitive.
+      placeholder: "125%"
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](../blob/main/CODE_OF_CONDUCT.md).
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true

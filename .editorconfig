@@ -1,0 +1,32 @@
+root = true
+
+# Scripts must stay byte-exact for cmd.exe/OEM codepage reasons.
+[*.bat]
+charset = ascii
+end_of_line = crlf
+insert_final_newline = true
+
+[*.{ps1,vbs}]
+charset = ascii
+end_of_line = crlf
+insert_final_newline = true
+
+[*.json]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+indent_size = 2
+
+[*.{yml,yaml}]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = false

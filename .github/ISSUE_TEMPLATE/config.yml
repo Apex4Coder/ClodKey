@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "\U0001F4AC Question / help"
+    url: https://github.com/Apex4Coder/ClodKey/discussions
+    about: Ask how to do something. Discussions, not issues.
+  - name: "\U0001F512 Security vulnerability"
+    url: https://github.com/Apex4Coder/ClodKey/security/advisories/new
+    about: Do NOT open a public issue. Report privately via a security advisory.

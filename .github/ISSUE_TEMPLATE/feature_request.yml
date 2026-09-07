@@ -1,0 +1,52 @@
+name: "\U0001F680 Feature request"
+description: Suggest an idea for ClodKey. Every feature ships with a CLI twin (-SelfTest case) - describe the verifiable behavior.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ClodKey follows the GOLD principles: no silent defaults, typed ignorance,
+        every tray action has a CLI twin. A good feature request states what the
+        selftest should assert.
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Is there an existing issue for this?
+      options:
+        - label: I have searched the existing issues
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What is frustrating or missing today?
+      placeholder: As a user I want ... so that ...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How should it look/behave? Mention the strings.json keys you would add (UI text lives in data, not code).
+    validations:
+      required: true
+  - type: textarea
+    id: test
+    attributes:
+      label: Acceptance test (CLI twin)
+      description: What should `powershell -File live\ClodKey.ps1 -SelfTest` assert when this feature is done?
+      placeholder: "Set-Lang 'zh' -> sys profile renamed to 系统 ..."
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
