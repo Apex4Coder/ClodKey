@@ -546,7 +546,10 @@ function Import-System([bool]$Silent, [hashtable]$EnvOverride) {
         Write-Log 'info' 'legacy system profile migrated (flag added)'
     }
     if ($existing -and (Unprotect-String ([string]$existing.apiKey)) -eq $key) {
-        return $true   # already imported, do not touch user edits
+        # already imported: do not touch user edits, but the button must
+        # still give feedback - silence read as "did not load" (bug)
+        if (-not $Silent) { Set-Status (T 'sys_exists') }
+        return $true
     }
     $prof = [pscustomobject]@{
         id        = $(if ($existing) { [string]$existing.id } else { [guid]::NewGuid().ToString() })
@@ -1319,6 +1322,22 @@ $lv.Add_SelectedIndexChanged({
     if ($lv.SelectedItems.Count -gt 0) { Load-IntoFields $lv.SelectedItems[0].Tag }
 })
 
+# select the system profile in the list and load it into the fields;
+# the import button must fill the form even when nothing changed (bug:
+# after "New" cleared the fields, import left them empty)
+function Select-SystemInList {
+    foreach ($item in $lv.Items) {
+        if (Test-SystemProfile $item.Tag) {
+            $lv.SelectedIndices.Clear()
+            $item.Selected = $true
+            $item.EnsureVisible()
+            Load-IntoFields $item.Tag
+            return $true
+        }
+    }
+    return $false
+}
+
 # ---------- buttons ----------
 $btnNew.Add_Click({
     $script:CurrentId = $null
@@ -1391,8 +1410,9 @@ $btnCopy.Add_Click({
 })
 
 $btnImport.Add_Click({
-    [void](Import-System $false)
+    $found = Import-System $false
     Refresh-List
+    if ($found) { [void](Select-SystemInList) }
 })
 
 $btnEye.Add_Click({
@@ -1497,6 +1517,21 @@ if ($SelfTest) {
         [void](Import-System $true @{ ANTHROPIC_API_KEY = 'sk-test-123'; ANTHROPIC_AUTH_TOKEN = 'sk-test-123'; ANTHROPIC_BASE_URL = 'https://test.example.com' })
         $sysCount = @($script:Store.profiles | Where-Object { Test-SystemProfile $_ }).Count
         if ($sysCount -ne 1) { throw ('legacy dedup failed, count=' + $sysCount) }
+        # import button behavior (the reported bug): after "New" cleared
+        # the form, a second import must still select + refill the fields
+        $script:CurrentId = $null
+        $txtName.Text = ''; $txtBase.Text = ''; $txtKey.Text = ''
+        # NOTE: must pass the same EnvOverride - without it the function
+        # reads the REAL machine env (user's actual ANTHROPIC_* keys) and
+        # legitimately overwrites the sandbox profile (first run of this
+        # assert caught exactly that)
+        $sysEnv = @{ ANTHROPIC_API_KEY = 'sk-test-123'; ANTHROPIC_AUTH_TOKEN = 'sk-test-123'; ANTHROPIC_BASE_URL = 'https://test.example.com' }
+        $again = Import-System $true $sysEnv
+        if (-not $again) { throw 'second import returned false' }
+        Refresh-List
+        if (-not (Select-SystemInList)) { throw 'system profile not selectable' }
+        if ($txtKey.Text -ne 'sk-test-123') { throw 'import did not refill key field' }
+        if ($txtName.Text -ne (T 'sys_name')) { throw 'import did not refill name field' }
         # language switch: texts must change and persist
         Set-Lang 'en'
         if ((T 'btn_save') -ne 'Save') { throw 'lang switch failed' }
