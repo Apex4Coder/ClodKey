@@ -43,7 +43,12 @@
     "tip_apply": "Записать профиль в env блока ~/.claude/settings.json",
     "tray_open": "Открыть окно",
     "tray_folder": "Открыть папку",
+    "tray_logs": "Журнал работы",
     "tray_exit": "Выход",
+    "logs_title": "Журнал работы",
+    "btn_logs_refresh": "Обновить",
+    "btn_logs_open": "Файл лога",
+    "tip_logs": "Показать журнал: что приложение делает и почему",
     "status_ready": "Готов. Выбери профиль и нажми «Применить».",
     "hidden_hint": "Свёрнуто в трей. Клик по иконке - открыть.",
     "saved": "Профиль сохранён",
@@ -71,7 +76,8 @@
     "glyph_theme_light": "☀",
     "glyph_theme_dark": "☾",
     "glyph_tea": "☕",
-    "glyph_refresh": "⟳"
+    "glyph_refresh": "⟳",
+    "glyph_logs": "☰"
   },
   "en": {
     "app_title": "ClodKey",
@@ -116,7 +122,12 @@
     "tip_apply": "Write profile into env block of ~/.claude/settings.json",
     "tray_open": "Open window",
     "tray_folder": "Open folder",
+    "tray_logs": "Activity log",
     "tray_exit": "Exit",
+    "logs_title": "Activity log",
+    "btn_logs_refresh": "Refresh",
+    "btn_logs_open": "Log file",
+    "tip_logs": "Show what the app is doing and why",
     "status_ready": "Ready. Pick a profile and press Apply.",
     "hidden_hint": "Minimized to tray. Click the icon to open.",
     "saved": "Profile saved",
@@ -144,7 +155,8 @@
     "glyph_theme_light": "☀",
     "glyph_theme_dark": "☾",
     "glyph_tea": "☕",
-    "glyph_refresh": "⟳"
+    "glyph_refresh": "⟳",
+    "glyph_logs": "☰"
   },
   "zh": {
     "app_title": "ClodKey",
@@ -189,7 +201,12 @@
     "tip_apply": "写入 ~/.claude/settings.json 的 env 块",
     "tray_open": "打开窗口",
     "tray_folder": "打开文件夹",
+    "tray_logs": "工作日志",
     "tray_exit": "退出",
+    "logs_title": "工作日志",
+    "btn_logs_refresh": "刷新",
+    "btn_logs_open": "日志文件",
+    "tip_logs": "显示应用正在做什么以及原因",
     "status_ready": "就绪。选择配置并点击「应用」。",
     "hidden_hint": "已最小化到托盘。点击图标打开。",
     "saved": "配置已保存",
@@ -217,7 +234,8 @@
     "glyph_theme_light": "☀",
     "glyph_theme_dark": "☾",
     "glyph_tea": "☕",
-    "glyph_refresh": "⟳"
+    "glyph_refresh": "⟳",
+    "glyph_logs": "☰"
   },
   "es": {
     "app_title": "ClodKey",
@@ -262,7 +280,12 @@
     "tip_apply": "Escribir en el bloque env de ~/.claude/settings.json",
     "tray_open": "Abrir ventana",
     "tray_folder": "Abrir carpeta",
+    "tray_logs": "Registro de actividad",
     "tray_exit": "Salir",
+    "logs_title": "Registro de actividad",
+    "btn_logs_refresh": "Actualizar",
+    "btn_logs_open": "Archivo de log",
+    "tip_logs": "Muestra qué hace la app y por qué",
     "status_ready": "Listo. Elige un perfil y pulsa «Aplicar».",
     "hidden_hint": "Minimizado a la bandeja. Clic en el icono para abrir.",
     "saved": "Perfil guardado",
@@ -290,6 +313,7 @@
     "glyph_theme_light": "☀",
     "glyph_theme_dark": "☾",
     "glyph_tea": "☕",
-    "glyph_refresh": "⟳"
+    "glyph_refresh": "⟳",
+    "glyph_logs": "☰"
   }
 }

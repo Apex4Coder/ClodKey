@@ -807,7 +807,10 @@ $btnLangRu  = New-IconButton (T 'glyph_ru') 104 8
 $btnLangEn  = New-IconButton (T 'glyph_en') 130 8
 $btnLangZh  = New-IconButton (T 'glyph_zh') 156 8
 $btnLangEs  = New-IconButton (T 'glyph_es') 182 8
-$btnTheme   = New-IconButton (T 'glyph_theme_light') 212 8
+$btnLogs    = New-IconButton (T 'glyph_logs') 208 8
+Tip $btnLogs 'tip_logs'
+$btnLogs.Add_Click({ Show-Logs })
+$btnTheme   = New-IconButton (T 'glyph_theme_light') 234 8
 $btnTea     = New-IconButton (T 'glyph_tea') 238 8
 $btnClose   = New-IconButton (T 'btn_close') 264 8
 $script:LangBtns = @{ ru = $btnLangRu; en = $btnLangEn; zh = $btnLangZh; es = $btnLangEs }
@@ -1112,6 +1115,12 @@ $script:ProbeScript = {
     return $out
 }
 
+function Mask-Key([string]$K) {
+    if (-not $K) { return '(empty)' }
+    if ($K.Length -le 12) { return 'len=' + $K.Length }
+    return ($K.Substring(0, 8) + '...' + $K.Substring($K.Length - 4) + ' len=' + $K.Length)
+}
+
 function Start-ModelProbe {
     $base = $txtBase.Text.Trim().TrimEnd('/')
     $key = $txtKey.Text
@@ -1119,8 +1128,12 @@ function Start-ModelProbe {
     # fingerprint guard: boot probe + TextChanged debounce must not launch
     # the same check twice
     $fp = $base + '|' + $key
-    if ($script:ProbeRunning -and $fp -eq $script:ProbeLastFp) { return }
+    if ($script:ProbeRunning -and $fp -eq $script:ProbeLastFp) {
+        Write-Log 'info' 'probe skipped: same fingerprint already running'
+        return
+    }
     $script:ProbeLastFp = $fp
+    Write-Log 'info' ('probe start: base=' + $base + ' key=' + (Mask-Key $key))
     if ($script:ProbePS) {
         try { $script:ProbePS.Stop() } catch { }
         try { $script:ProbePS.Dispose() } catch { }
@@ -1160,11 +1173,13 @@ $script:ProbeTimer.Add_Tick({
     if (-not $res -or @($res).Count -lt 1) { return }
     $data = @($res)[0]
     if ([string]$data.status -eq 'badkey') {
+        Write-Log 'info' 'probe result: badkey (neither auth header accepted)'
         $cmbModel.Items.Clear()
         $script:LastGoodModelIdx = -1
         Set-Status (T 'models_badkey')
         return
     }
+    Write-Log 'info' ('probe auth: x-api-key=' + [string]$data.authApi + ' bearer=' + [string]$data.authBearer)
     # detected auth method: select the segment and keep it glowing green
     # until the user picks a mode manually
     $authLbl = ''
@@ -1237,7 +1252,7 @@ function Stop-Glow {
 # debounce: probe ~0.9 s after the last key/base keystroke
 $script:KeyTimer = New-Object Windows.Forms.Timer
 $script:KeyTimer.Interval = 900
-$script:KeyTimer.Add_Tick({ $script:KeyTimer.Stop(); Start-ModelProbe })
+$script:KeyTimer.Add_Tick({ $script:KeyTimer.Stop(); Write-Log 'info' 'probe debounce fired'; Start-ModelProbe })
 $txtKey.Add_TextChanged({ $script:KeyTimer.Stop(); $script:KeyTimer.Start() })
 $txtBase.Add_TextChanged({ $script:KeyTimer.Stop(); $script:KeyTimer.Start() })
 
@@ -1279,6 +1294,149 @@ $pnlProgress.Add_Paint({
     $g.FillPath($brS, $pathS)
     $brS.Dispose(); $pathS.Dispose()
 })
+
+# ---------- log viewer window: the algorithm must be observable ----------
+# Every probe/apply step goes to clodkey.log via Write-Log; this window
+# tails it live so the user can SEE what the app is doing and why.
+function Get-LogTail([int]$Lines) {
+    try {
+        if (-not (Test-Path -LiteralPath $LogPath)) { return '(log file not created yet)' }
+        $fs = New-Object IO.FileStream($LogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $sr = New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)
+        $all = $sr.ReadToEnd()
+        $sr.Close(); $fs.Close()
+        $arr = @($all -split "`r?`n")
+        if ($arr.Count -gt $Lines) { $arr = $arr[($arr.Count - $Lines)..($arr.Count - 1)] }
+        return ($arr -join "`r`n")
+    } catch {
+        return ('log read failed: ' + $_.Exception.Message)
+    }
+}
+
+$script:LogForm = $null
+$script:LogBox = $null
+$script:LogTimer = $null
+
+function Update-LogView {
+    if (-not $script:LogBox) { return }
+    $txt = Get-LogTail 600
+    if ($txt -ne $script:LogBox.Text) {
+        $script:LogBox.Text = $txt
+        $script:LogBox.SelectionStart = $script:LogBox.TextLength
+        $script:LogBox.ScrollToCaret()
+    }
+}
+
+function Show-Logs {
+    if ($script:LogForm -and -not $script:LogForm.IsDisposed) {
+        $script:LogForm.Show()
+        $script:LogForm.BringToFront()
+        $script:LogForm.Activate()
+        Update-LogView
+        return
+    }
+    $lf = New-Object ClodUi.ClodForm
+    $lf.Text = (T 'logs_title')
+    $lf.ClientSize = New-Object Drawing.Size(470, 540)
+    $lf.StartPosition = 'Manual'
+    $lf.Surface = $script:surface
+    $lf.Border = $script:borderClr
+    $lf.BackColor = $script:surface
+    $lf.ForeColor = $script:ink
+    $lf.Font = $fontUi
+    $lf.Icon = $script:AppIcon
+    $lf.ShowInTaskbar = $true
+    $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $lf.Location = New-Object Drawing.Point(($wa.Left + [int](($wa.Width - $lf.Width) / 2)), ($wa.Top + 40))
+
+    $lt = New-Object Windows.Forms.Label
+    $lt.Text = (T 'logs_title')
+    $lt.Font = $fontTitle
+    $lt.ForeColor = $script:ink
+    $lt.BackColor = [Drawing.Color]::Transparent
+    $lt.AutoSize = $true
+    $lt.Location = New-Object Drawing.Point(14, 10)
+    $lf.Controls.Add($lt)
+
+    # local factory: ClodButton on THIS form (New-MicroButton targets main)
+    $mkLogBtn = {
+        param($text, $x, $y, $w, $h)
+        $b = New-Object ClodUi.ClodButton
+        $b.Text = $text
+        $b.Location = New-Object Drawing.Point($x, $y)
+        $b.Size = New-Object Drawing.Size($w, $h)
+        $b.Pad = 5
+        $b.Radius = [int](($h - 10) / 2)
+        $b.Surface = $script:surface
+        $b.Ink = $script:ink
+        $b.ShadowDark = $script:shadowDark
+        $b.LightShadow = $script:shadowLight
+        $b.AccentColor = $script:accentClr
+        $b.AccentText = $script:accentText
+        $b.ForeColor = $script:ink
+        $b.Font = $fontMicro
+        $lf.Controls.Add($b)
+        return $b
+    }
+    $bw = 92
+    $btnLfRefresh = & $mkLogBtn (T 'btn_logs_refresh') ($lf.ClientSize.Width - 14 - 3 * ($bw + 6)) 10 $bw 26
+    $btnLfOpen    = & $mkLogBtn (T 'btn_logs_open')    ($lf.ClientSize.Width - 14 - 2 * ($bw + 6)) 10 $bw 26
+    $btnLfClose   = & $mkLogBtn (T 'btn_close')        ($lf.ClientSize.Width - 14 - 34) 10 34 26
+
+    $wp = New-Object ClodUi.ClodPanel
+    $wp.Surface = $script:surface
+    $wp.ShadowDark = $script:shadowDark
+    $wp.LightShadow = $script:shadowLight
+    $wp.Radius = 14
+    $wp.Location = New-Object Drawing.Point(8, 44)
+    $wp.Size = New-Object Drawing.Size(($lf.ClientSize.Width - 16), ($lf.ClientSize.Height - 52))
+    $lf.Controls.Add($wp)
+
+    $tb = New-Object Windows.Forms.TextBox
+    $tb.Multiline = $true
+    $tb.ReadOnly = $true
+    $tb.ScrollBars = 'Vertical'
+    $tb.BorderStyle = 'None'
+    $tb.BackColor = $script:surface
+    $tb.ForeColor = $script:ink
+    $tb.Font = $fontMono
+    $tb.Location = New-Object Drawing.Point(10, 8)
+    $tb.Size = New-Object Drawing.Size(($wp.Width - 26), ($wp.Height - 16))
+    $tb.Anchor = 'Top,Left,Right,Bottom'
+    $wp.Controls.Add($tb)
+    $script:LogBox = $tb
+
+    $dragLog = {
+        param($s, $e)
+        if ($e.Button -eq [Windows.Forms.MouseButtons]::Left) {
+            [void][ClodNative]::ReleaseCapture()
+            [void][ClodNative]::SendMessage($script:LogForm.Handle, 0xA1, [IntPtr]2, [IntPtr]0)
+        }
+    }
+    $lt.Add_MouseDown($dragLog)
+    $btnLfRefresh.Add_Click({ Update-LogView })
+    $btnLfOpen.Add_Click({ Start-Process explorer.exe -ArgumentList ('/select,"' + $LogPath + '"') })
+    $btnLfClose.Add_Click({ $lf.Hide() })
+    # X and Alt+F4 hide the window, never kill the app
+    $lf.Add_FormClosing({
+        param($s, $e)
+        $e.Cancel = $true
+        $lf.Hide()
+    })
+
+    if (-not $script:LogTimer) {
+        $script:LogTimer = New-Object Windows.Forms.Timer
+        $script:LogTimer.Interval = 2000
+        $script:LogTimer.Add_Tick({
+            if ($script:LogForm -and $script:LogForm.Visible) { Update-LogView }
+        })
+        $script:LogTimer.Start()
+    }
+    $script:LogForm = $lf
+    $lf.Show()
+    Update-LogView
+    Write-Log 'info' 'log viewer opened'
+}
 
 # owner-draw rows: name + status badge; non-ok rows grayed
 $cmbModel.Add_DrawItem({
@@ -1432,8 +1590,10 @@ function Do-Layout {
     # and used to run under the glyphs (reported overlap).
     $lblTitle.Location = New-Object Drawing.Point($pad, $y)
     $titleH = $lblTitle.PreferredHeight
-    $ibSize = 26; $ibGap = 2
-    $icons = @($btnLangRu, $btnLangEn, $btnLangZh, $btnLangEs, $btnTheme, $btnTea, $btnClose)
+    # 8 icons must still clear the title: measured title right edge is 89,
+    # the row needs Left >= 93, so the icon box is 22 px (start = 98)
+    $ibSize = 22; $ibGap = 2
+    $icons = @($btnLangRu, $btnLangEn, $btnLangZh, $btnLangEs, $btnLogs, $btnTheme, $btnTea, $btnClose)
     $total = $icons.Count * $ibSize + ($icons.Count - 1) * $ibGap
     $ix = $W - $pad - $total
     $iy = $y + [int](($titleH - $ibSize) / 2)
@@ -1565,6 +1725,8 @@ function Build-TrayMenu {
     $miOpen.Add_Click({ Show-Main })
     $miFolder = $menu.Items.Add((T 'tray_folder'))
     $miFolder.Add_Click({ Start-Process explorer.exe -ArgumentList ('"' + $Base + '"') })
+    $miLogs = $menu.Items.Add((T 'tray_logs'))
+    $miLogs.Add_Click({ Show-Logs })
     [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
     $miExit = $menu.Items.Add((T 'tray_exit'))
     $miExit.Add_Click({ Exit-App })
@@ -1617,6 +1779,14 @@ function Apply-Theme {
     $cmbModel.ForeColor = $script:ink
     $cmbModel.Invalidate()
     $pnlProgress.Invalidate()
+    # the log viewer follows the palette too (if it is open)
+    if ($script:LogForm -and -not $script:LogForm.IsDisposed) {
+        $script:LogForm.Surface = $script:surface
+        $script:LogForm.Border = $script:borderClr
+        $script:LogForm.BackColor = $script:surface
+        $script:LogForm.ForeColor = $script:ink
+        $script:LogForm.Invalidate($true)
+    }
     foreach ($tb in $script:Fields) {
         $tb.BackColor = $script:surface
         $tb.ForeColor = $script:ink
@@ -1662,6 +1832,7 @@ function Apply-Language {
     # tooltips
     Tip $btnLangRu 'tip_lang'; Tip $btnLangEn 'tip_lang'; Tip $btnLangZh 'tip_lang'; Tip $btnLangEs 'tip_lang'
     Tip $btnTheme 'tip_theme'; Tip $btnTea 'tip_tea'; Tip $btnClose 'tip_close'
+    Tip $btnLogs 'tip_logs'
     Tip $btnImport 'tip_import'; Tip $btnEye 'tip_eye'
     Tip $cmbModel 'tip_model'
     Tip $btnRefresh 'tip_refresh'
@@ -1800,6 +1971,53 @@ function Select-SystemInList {
 }
 
 # ---------- buttons ----------
+# Save the VISIBLE form into the store and return the profile (or $null
+# with a validation status). Shared by Save and Apply so both act on the
+# same data the user sees.
+function Save-FromFields {
+    $name = $txtName.Text.Trim()
+    $base = $txtBase.Text.Trim().TrimEnd('/')
+    $key  = $txtKey.Text
+    if (-not $name) { Set-Status (T 'err_name'); return $null }
+    if (-not $base -or -not ($base -match '^https?://')) { Set-Status (T 'err_base'); return $null }
+    if (-not $key)  { Set-Status (T 'err_key'); return $null }
+    $prof = [pscustomobject]@{
+        id        = $(if ($script:CurrentId) { $script:CurrentId } else { [guid]::NewGuid().ToString() })
+        name      = $name
+        baseUrl   = $base
+        apiKey    = (Protect-String $key)
+        authMode  = $script:Mode
+        model     = $(if ($cmbModel.SelectedItem) { [string]$cmbModel.SelectedItem.id } else { '' })
+        updatedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    # editing the imported system profile must not lose its flag
+    foreach ($p in @($script:Store.profiles)) {
+        if ([string]$p.id -eq [string]$prof.id -and (Test-SystemProfile $p)) {
+            $prof = [pscustomobject]@{
+                id = $prof.id; name = $prof.name; baseUrl = $prof.baseUrl
+                apiKey = $prof.apiKey; authMode = $prof.authMode
+                model = $prof.model; updatedAt = $prof.updatedAt; system = $true
+            }
+            break
+        }
+    }
+    $profiles = @($script:Store.profiles)
+    $found = $false
+    for ($i = 0; $i -lt $profiles.Count; $i++) {
+        if ([string]$profiles[$i].id -eq [string]$prof.id) { $profiles[$i] = $prof; $found = $true; break }
+    }
+    if (-not $found) { $profiles += $prof }
+    Set-Prop $script:Store 'profiles' $profiles
+    Save-Store
+    $script:CurrentId = [string]$prof.id
+    Refresh-List
+    foreach ($item in $lv.Items) {
+        if ([string]$item.Tag.id -eq [string]$prof.id) { $item.Selected = $true; $item.EnsureVisible(); break }
+    }
+    Write-Log 'info' ('saved: name=' + $name + ' model=' + $(if ($prof.model) { $prof.model } else { '(none)' }) + ' mode=' + [string]$prof.authMode)
+    return $prof
+}
+
 $btnNew.Add_Click({
     $script:CurrentId = $null
     $lv.SelectedIndices.Clear()
@@ -1814,37 +2032,9 @@ $btnNew.Add_Click({
 })
 
 $btnSave.Add_Click({
-    $name = $txtName.Text.Trim()
-    $base = $txtBase.Text.Trim().TrimEnd('/')
-    $key  = $txtKey.Text
-    if (-not $name) { Set-Status (T 'err_name'); return }
-    if (-not $base -or -not ($base -match '^https?://')) { Set-Status (T 'err_base'); return }
-    if (-not $key)  { Set-Status (T 'err_key'); return }
-
-    $prof = [pscustomobject]@{
-        id        = $(if ($script:CurrentId) { $script:CurrentId } else { [guid]::NewGuid().ToString() })
-        name      = $name
-        baseUrl   = $base
-        apiKey    = (Protect-String $key)
-        authMode  = $script:Mode
-        model     = $(if ($cmbModel.SelectedItem) { [string]$cmbModel.SelectedItem.id } else { '' })
-        updatedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-    }
-    $profiles = @($script:Store.profiles)
-    $found = $false
-    for ($i = 0; $i -lt $profiles.Count; $i++) {
-        if ([string]$profiles[$i].id -eq [string]$prof.id) { $profiles[$i] = $prof; $found = $true; break }
-    }
-    if (-not $found) { $profiles += $prof }
-    Set-Prop $script:Store 'profiles' $profiles
     try {
-        Save-Store
-        $script:CurrentId = [string]$prof.id
-        Refresh-List
-        foreach ($item in $lv.Items) {
-            if ([string]$item.Tag.id -eq [string]$prof.id) { $item.Selected = $true; $item.EnsureVisible(); break }
-        }
-        Set-Status (T 'saved')
+        $prof = Save-FromFields
+        if ($prof) { Set-Status (T 'saved') }
     } catch {
         Set-Status ('save failed: ' + $_.Exception.Message)
         Write-Log 'error' ('save: ' + $_.Exception.Message)
@@ -1889,16 +2079,16 @@ $btnEye.Add_Click({
 })
 
 $btnApply.Add_Click({
-    if (-not $script:CurrentId) { Set-Status (T 'err_no_selection'); return }
-    $target = $null
-    foreach ($p in @($script:Store.profiles)) {
-        if ([string]$p.id -eq [string]$script:CurrentId) { $target = $p; break }
-    }
-    if ($null -eq $target) { Set-Status (T 'err_no_selection'); return }
+    # APPLY WHAT IS ON SCREEN (reported bug: the old handler applied the
+    # STORED profile, so a freshly picked model/mode was silently ignored
+    # unless Save was pressed first). Save the visible fields, then write.
     try {
-        $path = Apply-ToClaudeCli $target
+        $prof = Save-FromFields
+        if (-not $prof) { return }
+        Write-Log 'info' ('apply: name=' + [string]$prof.name + ' model=' + $(if ($prof.model) { [string]$prof.model } else { '(none)' }) + ' mode=' + [string]$prof.authMode + ' base=' + [string]$prof.baseUrl)
+        $path = Apply-ToClaudeCli $prof
         Refresh-List
-        Set-Status ((T 'applied') + ' ' + [string]$target.name)
+        Set-Status ((T 'applied') + ' ' + [string]$prof.name)
     } catch {
         Set-Status ((T 'apply_fail') + ' ' + $_.Exception.Message)
         Write-Log 'error' ('apply: ' + $_.Exception.Message)
@@ -2023,6 +2213,22 @@ if ($SelfTest) {
         Load-Store
         if ($script:Store.settings.theme -ne 'dark') { throw 'theme not persisted' }
         Set-Theme 'light'
+        # apply must follow the SCREEN, not the stale store (the reported
+        # bug: opus picked in the dropdown, Apply wrote the old deepseek)
+        $sysP2 = @($script:Store.profiles | Where-Object { Test-SystemProfile $_ })[0]
+        Load-IntoFields $sysP2
+        Select-ModelOrAdd 'test-model-screen'
+        $profA = Save-FromFields
+        if (-not $profA) { throw 'Save-FromFields returned null' }
+        if ([string]$profA.model -ne 'test-model-screen') { throw 'save did not capture the screen model' }
+        $null = Apply-ToClaudeCli $profA
+        $docM = [IO.File]::ReadAllText((Join-Path $env:USERPROFILE '.claude\settings.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($docM.env.ANTHROPIC_MODEL -ne 'test-model-screen') { throw 'apply ignored the model selected on screen' }
+        # the system flag must survive an edit-save of the system profile
+        $sysAfter = @($script:Store.profiles | Where-Object { Test-SystemProfile $_ })
+        if ($sysAfter.Count -ne 1) { throw ('system flag lost on save, count=' + $sysAfter.Count) }
+        # log tail must be readable for the viewer window
+        if (-not (Get-LogTail 20)) { throw 'log tail empty' }
         # layout: no vertical overlaps between stacked elements (the
         # reported bug: labels ran into the profile block / each other)
         Do-Layout
