@@ -993,19 +993,16 @@ function Do-Layout {
     $pad = 12
     $fw = $W - 2 * $pad
     $y = 8
-    # header: title + sub on the left, icon row right-aligned, vertically
-    # centered against the title+sub block
+    # header row 1: title left, icon row right (centered on the title).
+    # row 2: sub label BELOW the whole icon row - the sub text is long
+    # and used to run under the glyphs (reported overlap).
     $lblTitle.Location = New-Object Drawing.Point($pad, $y)
     $titleH = $lblTitle.PreferredHeight
-    $subY = $y + $titleH + 1
-    $lblDot.Location = New-Object Drawing.Point(($pad + 1), $subY)
-    $subH = $lblDot.PreferredHeight
-    $headBottom = $subY + $subH
     $ibSize = 26; $ibGap = 2
     $icons = @($btnLangRu, $btnLangEn, $btnLangZh, $btnLangEs, $btnTheme, $btnTea, $btnClose)
     $total = $icons.Count * $ibSize + ($icons.Count - 1) * $ibGap
     $ix = $W - $pad - $total
-    $iy = $y + [int](($headBottom - $y - $ibSize) / 2)
+    $iy = $y + [int](($titleH - $ibSize) / 2)
     if ($iy -lt $y) { $iy = $y }
     foreach ($ib in $icons) {
         $ib.Size = New-Object Drawing.Size($ibSize, $ibSize)
@@ -1013,6 +1010,11 @@ function Do-Layout {
         $ib.Location = New-Object Drawing.Point($ix, $iy)
         $ix += $ibSize + $ibGap
     }
+    $rowBottom = [Math]::Max($y + $titleH, $iy + $ibSize)
+    $subY = $rowBottom + 2
+    $lblDot.Location = New-Object Drawing.Point(($pad + 1), $subY)
+    $subH = $lblDot.PreferredHeight
+    $headBottom = $subY + $subH
     $y = $headBottom + 10
     # profiles row: label left, import button right
     $lblProfiles.Location = New-Object Drawing.Point($pad, $y)
@@ -1565,6 +1567,8 @@ if ($SelfTest) {
         if ($lblStatus.Bottom -gt $form.ClientSize.Height) { throw 'status clipped by window' }
         # icon row must fit horizontally
         if (($btnLangRu.Left -lt ($lblTitle.Right + 4)) -or ($btnClose.Right -gt ($form.ClientSize.Width - 8))) { throw 'icon row misplaced' }
+        # sub label must sit fully below the icon row (reported overlap)
+        if ($lblDot.Top -lt $btnClose.Bottom) { throw 'sub label overlaps icon row' }
         Write-Log 'info' 'selftest ok'
         Write-Host 'SELFTEST OK'
         exit 0
