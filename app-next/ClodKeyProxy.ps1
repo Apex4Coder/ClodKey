@@ -310,6 +310,7 @@ namespace ClodUi {
             }
             Color tc = (Accent || Selected) ? AccentText : Ink;
             if (carved && !Accent) tc = Shape.Darken(tc, 0.12);
+            if (!Enabled) tc = Shape.Mix(tc, Surface, 0.55);
             TextRenderer.DrawText(g, Text, Font, new Rectangle(0, _down ? 1 : 0, Width, Height), tc,
                 Color.Transparent,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
@@ -575,7 +576,7 @@ $script:Langs = @('ru', 'en', 'zh', 'es')
 function T([string]$Key) {
     $loc = $null
     if ($script:S -and ($script:S.PSObject.Properties.Name -contains $script:Lang)) { $loc = $script:S.$script:Lang }
-    if (-not $loc -and $script:S -and ($script:S.PSObject.Properties.Name -contains 'ru')) { $loc = $script:S.ru }
+    if (-not $loc -and $script:S -and ($script:S.PSObject.Properties.Name -contains 'en')) { $loc = $script:S.en }
     if ($loc -and ($loc.PSObject.Properties.Name -contains $Key)) { return [string]$loc.$Key }
     return $Key
 }
@@ -660,7 +661,7 @@ function Remove-Prop($Obj, [string]$Name) {
 
 # ---------- settings (lang + theme), persisted in the store ----------
 Load-Store
-$script:Lang = 'ru'
+$script:Lang = 'en'   # FIX1: English by default; a saved choice still wins
 $script:Theme = 'light'
 if ($script:Store.PSObject.Properties.Name -contains 'settings') {
     $st = $script:Store.settings
@@ -1177,6 +1178,11 @@ $lv.Font = $fontUi
 [void]$lv.Columns.Add((T 'col_base'), 128)
 [void]$lv.Columns.Add((T 'col_updated'), 52)
 $form.Controls.Add($lv)
+# FIX1 (profiles invisible): $lvWell was added to Controls BEFORE $lv and
+# WinForms z-order puts earlier-added siblings ON TOP. The opaque inset well
+# covered the whole ListView: rows existed (log: store loaded, profiles=3)
+# but were never visible. The list must sit above its well.
+$lv.BringToFront()
 
 $lv.Add_DrawColumnHeader({
     param($s, $e)
@@ -1188,34 +1194,63 @@ $lv.Add_DrawColumnHeader({
     $g.DrawString($e.Text, $fontMicro, $b, $e.Bounds.X + 4, $e.Bounds.Y + 1)
     $b.Dispose()
 })
+# FIX1: padlock for the built-in System profile. Drawn with GDI+, not an
+# emoji: the .ps1 is ASCII-only and GDI+ renders colour emoji as boxes.
+function Draw-LockGlyph($g, [int]$X, [int]$Y, $Clr) {
+    $pen = New-Object Drawing.Pen($Clr, 1.4)
+    $g.DrawArc($pen, ($X + 1), $Y, 7, 8, 180, 180)
+    $g.DrawLine($pen, ($X + 1), ($Y + 4), ($X + 1), ($Y + 5))
+    $g.DrawLine($pen, ($X + 8), ($Y + 4), ($X + 8), ($Y + 5))
+    $pen.Dispose()
+    $br = New-Object Drawing.SolidBrush($Clr)
+    $g.FillRectangle($br, $X, ($Y + 5), 10, 6)
+    $br.Dispose()
+}
 $lv.Add_DrawItem({
     param($s, $e)
-    if ($e.ItemIndex -ge 0) {
-        $e.DrawBackground = $false
-        # system focus rectangle paints solid blue over owner-draw rows
-        $e.DrawFocusRectangle = $false
+    if ($e.ItemIndex -lt 0) { return }
+    $e.DrawBackground = $false
+    # system focus rectangle paints solid blue over owner-draw rows
+    $e.DrawFocusRectangle = $false
+    # FIX1: the row background is painted ONCE, here, inside the row bounds.
+    # The old DrawSubItem called Graphics.Clear() (wipes the whole clip, i.e.
+    # the neighbour cells too) and drew the selection pill per cell across the
+    # full row width - every cell erased the text of the previous one.
+    $g = $e.Graphics
+    $g.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $rb = $e.Bounds
+    $bg = New-Object Drawing.SolidBrush($script:surface)
+    $g.FillRectangle($bg, $rb)
+    $bg.Dispose()
+    if ($e.Item.Selected) {
+        $r = New-Object Drawing.Rectangle(($rb.X + 2), ($rb.Y + 1), ($rb.Width - 6), ($rb.Height - 2))
+        [ClodUi.Shape]::Inset($g, $r, 9, $script:surface, $script:shadowDark, $script:shadowLight, 3)
     }
 })
 $lv.Add_DrawSubItem({
     param($s, $e)
     $g = $e.Graphics
     $b = $e.SubItem.Bounds
+    # WinForms quirk: SubItem[0].Bounds spans the WHOLE row; clamp column 0
+    # to its own width or a long name runs under the Base URL text
+    $bw = $b.Width
+    if ($e.ColumnIndex -eq 0) { $bw = $lv.Columns[0].Width }
     $sel = $e.Item.Selected
-    if ($sel) {
-        $r = New-Object Drawing.Rectangle(2, ($b.Y + 1), ($lv.Width - 6), ($b.Height - 2))
-        [ClodUi.Shape]::Inset($g, $r, 9, $surface, $shadowDark, $shadowLight, 3)
-    } else {
-        $g.Clear($surface)
+    $clr = $script:muted
+    if ($sel -or $e.ColumnIndex -eq 0) { $clr = $script:ink }
+    $tx = $b.X + 8
+    if ($e.ColumnIndex -eq 0 -and (Test-SystemProfile $e.Item.Tag)) {
+        Draw-LockGlyph $g ($b.X + 7) ($b.Y + [int](($b.Height - 11) / 2)) $clr
+        $tx = $b.X + 21
     }
-    $clr = $muted
-    if ($sel) { $clr = $ink }
-    elseif ($e.ColumnIndex -eq 0) { $clr = $ink }
     $tb = New-Object Drawing.SolidBrush($clr)
     $fmt = New-Object Drawing.StringFormat
     $fmt.Trimming = [Drawing.StringTrimming]::EllipsisCharacter
-    $rectB = New-Object Drawing.RectangleF(($b.X + 8), ($b.Y + 2), ($b.Width - 12), ($b.Height - 4))
+    $fmt.FormatFlags = [Drawing.StringFormatFlags]::NoWrap
+    $rectB = New-Object Drawing.RectangleF($tx, ($b.Y + 2), ($b.X + $bw - $tx - 4), ($b.Height - 4))
     $g.DrawString($e.SubItem.Text, $fontUi, $tb, $rectB, $fmt)
     $tb.Dispose()
+    $fmt.Dispose()
 })
 
 # ---------- fields (positions: Do-Layout) ----------
@@ -1855,9 +1890,9 @@ function Update-BridgeStatus {
     $script:BridgeUp = $true; $host_ = [string]$health.upstream
     try { $host_ = ([Uri]$health.upstream).Host } catch { }
     # BUI-04: streaming indicator. on/off from /health; n/a if the field is
-    # absent (older bridge build) — never invented.
+    # absent (older bridge build) - never invented.
     $stream = if ($health.PSObject.Properties.Name -contains 'streaming' -and $health.streaming) { [string]$health.streaming } else { 'n/a' }
-    $flags = ('shape={0} · nudge={1} · stream={2} · compact={3}' -f [bool]$health.shapeRouting, [bool]$health.nudge, $stream, $(if ($health.compact) { [string]$health.compact.mode } else { 'off' }))
+    $flags = ('shape={0} | nudge={1} | stream={2} | compact={3}' -f [bool]$health.shapeRouting, [bool]$health.nudge, $stream, $(if ($health.compact) { [string]$health.compact.mode } else { 'off' }))
     # Context size: the bridge budget and the estimate of the CURRENT session
     # are what Zoo shows as "context". The estimate comes from /status lines
     # (compact/tokens events carry real numbers).
@@ -1868,14 +1903,14 @@ function Update-BridgeStatus {
         if ($line -match '~(\d+)->~(\d+) tok') { $ctx = 'ctx {0}->{1} tok' -f $Matches[1], $Matches[2]; break }
     }
     $counters = ''
-    foreach ($n in @('requests','requestCount','totalRequests')) { if ($health.PSObject.Properties.Name -contains $n) { $counters = (' · requests {0}' -f $health.$n); break } }
+    foreach ($n in @('requests','requestCount','totalRequests')) { if ($health.PSObject.Properties.Name -contains $n) { $counters = (' | requests {0}' -f $health.$n); break } }
     $script:BridgeStatus.Text = (T 'bridge_up')
     $script:BridgeDetails.Text = ((T 'bridge_detail_full') -f $script:BridgePort, $host_, $flags, $counters)
     # Mini-log: the LAST event line, changing in place (one line, not a list).
     if ($script:BridgeMini) {
-        if ($ctx) { $script:BridgeMini.Text = ('{0} · {1}' -f $ctx, $flags) }
+        if ($ctx) { $script:BridgeMini.Text = ('{0} | {1}' -f $ctx, $flags) }
         elseif ($statusLines.Count -gt 0) { $script:BridgeMini.Text = $statusLines[-1] }
-        else { $script:BridgeMini.Text = ('budget {0} tok · no events yet' -f $budget) }
+        else { $script:BridgeMini.Text = ('budget {0} tok | no events yet' -f $budget) }
     }
 }
 # BUI-02: save the currently selected profile key/base into bridge/.env ONLY.
@@ -2534,7 +2569,10 @@ function Exit-App {
 # ---------- list <-> fields ----------
 function Refresh-List {
     $lv.Items.Clear()
-    foreach ($p in @($script:Store.profiles)) {
+    # FIX1: the built-in System profile is always the first row
+    $all = @($script:Store.profiles)
+    $ordered = @($all | Where-Object { Test-SystemProfile $_ }) + @($all | Where-Object { -not (Test-SystemProfile $_) })
+    foreach ($p in $ordered) {
         $item = New-Object Windows.Forms.ListViewItem([string]$p.name)
         [void]$item.SubItems.Add([string]$p.baseUrl)
         $shown = ''
@@ -2547,6 +2585,21 @@ function Refresh-List {
         [void]$lv.Items.Add($item)
     }
     Update-TrayTooltip
+}
+
+# FIX1: the System profile mirrors ~/.claude/settings.json + ANTHROPIC_* env.
+# It is read-only in the manager: name / base / key cannot be edited and it
+# cannot be deleted. Model and auth mode stay selectable. To use other keys:
+# New -> fill in -> Save, like any normal profile.
+$script:SysLocked = $false
+function Set-SystemLock([bool]$On) {
+    $script:SysLocked = $On
+    foreach ($tbx in @($txtName, $txtBase, $txtKey)) {
+        $tbx.ReadOnly = $On
+        $tbx.BackColor = $script:surface
+    }
+    $btnDelete.Enabled = -not $On
+    $btnDelete.Invalidate()
 }
 
 function Load-IntoFields($Prof) {
@@ -2563,6 +2616,7 @@ function Load-IntoFields($Prof) {
     $m = ''
     if ($Prof.PSObject.Properties.Name -contains 'model') { $m = [string]$Prof.model }
     Select-ModelOrAdd $m
+    Set-SystemLock (Test-SystemProfile $Prof)
 }
 
 $lv.Add_SelectedIndexChanged({
@@ -2593,6 +2647,16 @@ function Save-FromFields {
     $name = $txtName.Text.Trim()
     $base = $txtBase.Text.Trim().TrimEnd('/')
     $key  = $txtKey.Text
+    if ($script:SysLocked -and $script:CurrentId) {
+        # System profile: identity fields come from the store, never the form
+        foreach ($p in @($script:Store.profiles)) {
+            if ([string]$p.id -eq [string]$script:CurrentId -and (Test-SystemProfile $p)) {
+                $name = [string]$p.name; $base = [string]$p.baseUrl
+                try { $key = Unprotect-String ([string]$p.apiKey) } catch { }
+                break
+            }
+        }
+    }
     if (-not $name) { Set-Status (T 'err_name'); return $null }
     if (-not $base -or -not ($base -match '^https?://')) { Set-Status (T 'err_base'); return $null }
     if (-not $key)  { Set-Status (T 'err_key'); return $null }
@@ -2635,6 +2699,7 @@ function Save-FromFields {
 
 $btnNew.Add_Click({
     $script:CurrentId = $null
+    Set-SystemLock $false
     $lv.SelectedIndices.Clear()
     $txtName.Text = ''; $txtBase.Text = ''; $txtKey.Text = ''
     Set-Mode 'both'
@@ -2658,6 +2723,7 @@ $btnSave.Add_Click({
 
 $btnDelete.Add_Click({
     if (-not $script:CurrentId) { return }
+    if ($script:SysLocked) { Set-Status (T 'sys_locked'); return }
     $res = [Windows.Forms.MessageBox]::Show(
         (T 'confirm_delete') + ': ' + $txtName.Text + '?',
         (T 'app_title'),
@@ -2924,6 +2990,24 @@ if ($SelfTest) {
                 throw ('glyph clipped in icon box: ' + $ib.Text + ' needs ' + $need + ' px, box ' + $ib.Width)
             }
         }
+        # FIX1 regression: every stored profile is a visible row, System first
+        # and locked, and the list sits above its well (the reported bug)
+        $extra = [pscustomobject]@{ id = [guid]::NewGuid().ToString(); name = 'selftest-2'; baseUrl = 'https://two.example.com'; apiKey = (Protect-String 'sk-test-456'); authMode = 'both'; updatedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        Set-Prop $script:Store 'profiles' (@($script:Store.profiles) + $extra)
+        Save-Store
+        Refresh-List
+        $want = @($script:Store.profiles).Count
+        if ($lv.Items.Count -ne $want) { throw ('list rows ' + $lv.Items.Count + ' != profiles ' + $want) }
+        if (-not (Test-SystemProfile $lv.Items[0].Tag)) { throw 'system profile is not the first row' }
+        if ($form.Controls.GetChildIndex($lv) -gt $form.Controls.GetChildIndex($lvWell)) { throw 'profile list is hidden under its well (z-order)' }
+        Load-IntoFields $lv.Items[0].Tag
+        if (-not $script:SysLocked -or -not $txtKey.ReadOnly -or $btnDelete.Enabled) { throw 'system profile is not locked' }
+        $before = @($script:Store.profiles).Count
+        $btnDelete.PerformClick()
+        if (@($script:Store.profiles).Count -ne $before) { throw 'system profile was deleted' }
+        Load-IntoFields $extra
+        if ($script:SysLocked -or $txtKey.ReadOnly) { throw 'normal profile stayed locked' }
+        Write-Log 'info' ('selftest: list rows=' + $lv.Items.Count + ' (system first, locked)')
         Write-Log 'info' 'selftest ok'
         Write-Host 'SELFTEST OK'
         exit 0

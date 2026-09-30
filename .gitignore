@@ -40,3 +40,6 @@ ehthumbs.db
 .vscode/
 .idea/
 *.swp
+
+# ---- local drop folders (patches/archives, not the release) -
+00/
