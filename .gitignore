@@ -1,16 +1,42 @@
-# runtime state - NEVER commit (DPAPI ciphertext, logs, local history)
+# ============================================================
+# Clod-key-proxy - paths that must NEVER be committed
+# ============================================================
+
+# ---- runtime state (secrets, logs, deploy backups) ----------
+# data\secrets.json is DPAPI ciphertext (CurrentUser scope);
+# logs\ and backups\ are local history. State lives OUTSIDE
+# the release on purpose (GOLD: deploy moves code only).
 data/
 logs/
-live/
-live.prev-*/
 backups/
 
-# OS noise
+# ---- installed release + rollback snapshots -----------------
+# live\ and live.prev-* are copies of app-next\, not sources.
+live/
+live.prev-*/
+
+# ---- bridge runtime: credentials + captured traffic --------
+# .env holds the real UPSTREAM_API_KEY; diag/ holds full
+# request bodies (avg ~2 MB each) captured on rejection.
+app-next/bridge/.env
+app-next/bridge/*.log
+app-next/bridge/*.log.*
+app-next/bridge/diag/
+app-next/bridge/.z.tmp.mjs
+app-next/bridge/.z-run.mjs
+
+# ---- node dependencies (bridge is dependency-free) ----------
+node_modules/
+
+# ---- app logs ----------------------------------------------
+app-next/*.log
+
+# ---- OS noise ----------------------------------------------
 Thumbs.db
 Desktop.ini
 ehthumbs.db
 
-# editors
+# ---- editors -----------------------------------------------
 .vscode/
 .idea/
 *.swp

@@ -18,6 +18,7 @@ The project follows the GOLD spec. Confirm each box or explain:
 - [ ] No new **silent defaults**: unknown values are typed (`"unknown"` / log + empty), never guessed
 - [ ] Every new tray action has a **CLI twin** (`-SelfTest` case or a `-Smoke` assertion)
 - [ ] State (`data\`, `logs\`) is **never** written inside `app-next\` or `live\`
+- [ ] Bridge `.env`, `diag\` and `*.log` are **never** committed (credentials + captured traffic)
 - [ ] GUI path writes **nothing to stdout** (file log only)
 - [ ] `Application::Run()` without a form argument; no `detached` for the GUI process
 
@@ -26,8 +27,11 @@ The project follows the GOLD spec. Confirm each box or explain:
 Run locally (Windows runner) and paste results:
 
 ```
-powershell -NoProfile -STA -File app-next\ClodKey.ps1 -Smoke
-powershell -NoProfile -STA -File app-next\ClodKey.ps1 -SelfTest
+powershell -NoProfile -STA -File app-next\ClodKeyProxy.ps1 -Smoke
+powershell -NoProfile -STA -File app-next\ClodKeyProxy.ps1 -SelfTest
+powershell -NoProfile -ExecutionPolicy Bypass -File check-locales.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\deploy-lock.tests.ps1
+node app-next\bridge\tools\unit-transforms.mjs
 ```
 
 - [ ] `-Smoke` exits 0

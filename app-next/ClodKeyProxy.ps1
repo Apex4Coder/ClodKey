@@ -1,5 +1,5 @@
 # ============================================================
-# ClodKey.ps1 - tray flyout key manager for Anthropic Claude CLI
+# ClodKeyProxy.ps1 - tray flyout bridge monitor + key manager (Clod-key-proxy)
 #
 # Stack: Windows PowerShell 5.1 + WinForms (ships with Windows,
 #        zero binary deps, AV-safe).
@@ -77,6 +77,32 @@ public static class ClodNative {
     [DllImport("user32.dll")]   public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")]   public static extern bool ReleaseCapture();
     [DllImport("user32.dll")]   public static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+
+    // BUI-06: native "zoom from the tray" animation. DrawAnimatedRects draws a
+    // transition between the tray rectangle and the window rectangle (IDANI_CAPTION).
+    // The tray rect is located through Shell_TrayWnd -> TrayNotifyWnd ->
+    // (optional) the specific button, per the researched Win32 pattern.
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string className, string windowName);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] public static extern bool DrawAnimatedRects(IntPtr hWnd, int idAni, RECT lprgFrom, RECT lprgTo);
+    public const int IDANI_CAPTION = 3;
+
+    public static void AnimateFromTray(IntPtr hWnd) {
+        try {
+            IntPtr shell = FindWindow("Shell_TrayWnd", null);
+            if (shell == IntPtr.Zero) return;
+            IntPtr notify = FindWindowEx(shell, IntPtr.Zero, "TrayNotifyWnd", null);
+            if (notify == IntPtr.Zero) notify = shell;
+            RECT tr; if (!GetWindowRect(notify, out tr)) return;
+            RECT wr; if (!GetWindowRect(hWnd, out wr)) return;
+            DrawAnimatedRects(hWnd, IDANI_CAPTION, tr, wr);
+        } catch { }
+    }
+    // NOTE: no DestroyIcon here on purpose. Owning the tray HICON lifetime
+    // from this script was tried and it made the icon blank out on hover;
+    // the reference tray never destroys it. See New-ProxyIcon.
 }
 '@
 }
@@ -299,12 +325,240 @@ namespace ClodUi {
             }
         }
     }
+
+    // Bridge status card: live dot + label rows + latency sparkline.
+    //
+    // Why a custom control and not stacked Labels: the card has to answer three
+    // questions at a glance - is the bridge up, which recovery rungs are armed,
+    // and is it answering fast right now. Labels can carry the text but not the
+    // pulse or the trend, and a transparent Label over a neumorphic surface
+    // flickers on repaint. One double-buffered control paints all of it.
+    public class ClodStatusCard : Panel {
+        public int Radius = 13;
+        public Color Surface = Color.FromArgb(230, 231, 238);
+        public Color Ink = Color.FromArgb(68, 71, 106);
+        public Color Muted = Color.FromArgb(147, 165, 190);
+        public Color ShadowDark = Color.FromArgb(184, 185, 190);
+        public Color LightShadow = Color.White;
+        public Color AccentColor = Color.FromArgb(68, 71, 106);
+
+        // 0 = unknown/offline (gray), 1 = up (green), 2 = degraded (amber)
+        public int State = 0;
+        public string Title = "bridge";
+        public string Detail = "";
+        // Rung badges, drawn as small pills: name + armed flag.
+        public string[] BadgeNames = new string[0];
+        public bool[] BadgeOn = new bool[0];
+        // Latency samples in ms, oldest first. Drawn as a sparkline.
+        public int[] Samples = new int[0];
+        // 0..1 breathing phase for the live dot.
+        public float Pulse = 0f;
+
+        public Font MicroFont = null;
+
+        public ClodStatusCard() {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            BackColor = Surface;
+        }
+
+        private Color StateColor() {
+            if (State == 1) return Color.FromArgb(46, 160, 67);
+            if (State == 2) return Color.FromArgb(210, 153, 34);
+            return Color.FromArgb(147, 165, 190);
+        }
+
+        protected override void OnPaint(PaintEventArgs e) {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            if (Width < 8 || Height < 8) return;
+            g.Clear(Surface);
+
+            var card = new Rectangle(2, 2, Width - 5, Height - 5);
+            if (card.Width < 6 || card.Height < 6) return;
+            int rad = Math.Min(Radius, card.Height / 2);
+            // Carved well, matching the input fields: this is a readout, not a
+            // control, so it must read as recessed rather than clickable.
+            Shape.Inset(g, card, rad, Surface, ShadowDark, LightShadow, 3);
+
+            Font f = MicroFont != null ? MicroFont : Font;
+            int pad = 10;
+            int x = card.X + pad;
+            int y = card.Y + 6;
+
+            // live dot: solid core plus a breathing halo when up
+            Color sc = StateColor();
+            int cx = x + 4, cy = y + 6;
+            if (State == 1 && Pulse > 0f) {
+                int halo = 4 + (int)(Pulse * 5f);
+                int a = (int)((1f - Pulse) * 90f);
+                using (var hb = new SolidBrush(Color.FromArgb(a, sc)))
+                    g.FillEllipse(hb, cx - halo, cy - halo, halo * 2, halo * 2);
+            }
+            using (var db = new SolidBrush(sc))
+                g.FillEllipse(db, cx - 4, cy - 4, 8, 8);
+
+            var titleRect = new Rectangle(x + 14, y - 1, card.Width - pad * 2 - 14, f.Height + 2);
+            TextRenderer.DrawText(g, Title, f, titleRect, Ink, Color.Transparent,
+                TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+            y += f.Height + 3;
+
+            if (!string.IsNullOrEmpty(Detail)) {
+                var dr = new Rectangle(x, y, card.Width - pad * 2, f.Height + 2);
+                TextRenderer.DrawText(g, Detail, f, dr, Muted, Color.Transparent,
+                    TextFormatFlags.Left | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+                y += f.Height + 4;
+            }
+
+            // rung badges: armed = accent pill, disarmed = outline only
+            if (BadgeNames.Length > 0) {
+                int bx = x;
+                int bh = f.Height + 4;
+                for (int i = 0; i < BadgeNames.Length; i++) {
+                    string t = BadgeNames[i];
+                    int bw = TextRenderer.MeasureText(t, f).Width + 12;
+                    if (bx + bw > card.Right - pad) break;
+                    var pill = new Rectangle(bx, y, bw, bh);
+                    bool on = i < BadgeOn.Length && BadgeOn[i];
+                    using (var p = Shape.Round(pill, bh / 2)) {
+                        if (on) {
+                            using (var br = new SolidBrush(Color.FromArgb(210, AccentColor)))
+                                g.FillPath(br, p);
+                        } else {
+                            using (var pen = new Pen(Color.FromArgb(120, Muted)))
+                                g.DrawPath(pen, p);
+                        }
+                    }
+                    TextRenderer.DrawText(g, t, f, pill, on ? Color.White : Muted, Color.Transparent,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                    bx += bw + 4;
+                }
+                y += bh + 4;
+            }
+
+            // sparkline: relative latency trend, scaled to the observed max so
+            // the shape stays readable regardless of absolute numbers
+            int sparkTop = y;
+            int sparkH = card.Bottom - 6 - sparkTop;
+            if (Samples.Length > 1 && sparkH > 6) {
+                int max = 1;
+                for (int i = 0; i < Samples.Length; i++) if (Samples[i] > max) max = Samples[i];
+                int w = card.Width - pad * 2;
+                var pts = new PointF[Samples.Length];
+                for (int i = 0; i < Samples.Length; i++) {
+                    float fx = x + (w * (float)i / (Samples.Length - 1));
+                    float fy = sparkTop + sparkH - (sparkH - 2) * ((float)Samples[i] / max);
+                    pts[i] = new PointF(fx, fy);
+                }
+                // filled area under the curve, then the curve itself
+                var area = new PointF[pts.Length + 2];
+                Array.Copy(pts, area, pts.Length);
+                area[pts.Length] = new PointF(x + w, sparkTop + sparkH);
+                area[pts.Length + 1] = new PointF(x, sparkTop + sparkH);
+                using (var ab = new SolidBrush(Color.FromArgb(40, AccentColor)))
+                    g.FillPolygon(ab, area);
+                using (var pen = new Pen(Color.FromArgb(180, AccentColor), 1.6f))
+                    g.DrawLines(pen, pts);
+                // newest point gets a marker: the eye needs an anchor for "now"
+                var last = pts[pts.Length - 1];
+                using (var lb = new SolidBrush(StateColor()))
+                    g.FillEllipse(lb, last.X - 2.5f, last.Y - 2.5f, 5f, 5f);
+            }
+        }
+    }
+}
+'@
+}
+
+# ---------- designer tray menu (BUI-06) ----------
+# A custom ToolStripProfessionalRenderer + ProfessionalColorTable repaints the
+# ContextMenuStrip in the app's neumorphic palette (no system blue, no gray).
+# Rounded hover pills, themed separators and borders. Verified pattern from the
+# web research (Stack Overflow "Windows 10 Styled ContextMenuStrip", MS Learn
+# ToolStripProfessionalRenderer). Colors are public fields so Apply-Theme can
+# re-skin the menu at runtime.
+if (-not ('ClodUi.MenuRenderer' -as [type])) {
+    Add-Type -ReferencedAssemblies @('System.Drawing.dll', 'System.Windows.Forms.dll') -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Windows.Forms;
+
+namespace ClodUi {
+    public class MenuColorTable : ProfessionalColorTable {
+        public Color Surface = Color.FromArgb(42, 44, 60);
+        public Color Hover = Color.FromArgb(66, 70, 96);
+        public Color Pressed = Color.FromArgb(80, 84, 116);
+        public Color Border = Color.FromArgb(28, 30, 42);
+        public Color Sep = Color.FromArgb(70, 74, 100);
+        public Color Ink = Color.FromArgb(226, 228, 238);
+        public override Color MenuBorder { get { return Border; } }
+        public override Color ToolStripDropDownBackground { get { return Surface; } }
+        public override Color ImageMarginGradientBegin { get { return Surface; } }
+        public override Color ImageMarginGradientMiddle { get { return Surface; } }
+        public override Color ImageMarginGradientEnd { get { return Surface; } }
+        public override Color MenuStripGradientBegin { get { return Surface; } }
+        public override Color MenuStripGradientEnd { get { return Surface; } }
+        public override Color MenuItemBorder { get { return Color.Transparent; } }
+        public override Color MenuItemSelected { get { return Hover; } }
+        public override Color MenuItemSelectedGradientBegin { get { return Hover; } }
+        public override Color MenuItemSelectedGradientEnd { get { return Hover; } }
+        public override Color MenuItemPressedGradientBegin { get { return Pressed; } }
+        public override Color MenuItemPressedGradientEnd { get { return Pressed; } }
+        public override Color SeparatorDark { get { return Sep; } }
+        public override Color SeparatorLight { get { return Sep; } }
+    }
+
+    public class MenuRenderer : ToolStripProfessionalRenderer {
+        public MenuRenderer(ProfessionalColorTable ct) : base(ct) { RoundedEdges = true; }
+        private MenuColorTable CT { get { return ColorTable as MenuColorTable; } }
+        private static GraphicsPath Round(Rectangle r, int rad) {
+            int d = rad * 2;
+            var p = new GraphicsPath();
+            if (r.Width <= 0 || r.Height <= 0) return p;
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e) {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var b = new SolidBrush(CT != null ? CT.Surface : e.ToolStrip.BackColor))
+                g.FillRectangle(b, new Rectangle(Point.Empty, e.ToolStrip.Size));
+        }
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) {
+            var g = e.Graphics;
+            var rect = new Rectangle(0, 0, e.ToolStrip.Width - 1, e.ToolStrip.Height - 1);
+            using (var pen = new Pen(CT != null ? CT.Border : e.ToolStrip.BackColor))
+                using (var p = Round(rect, 8)) g.DrawPath(pen, p);
+        }
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e) {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
+            var item = e.Item;
+            var rect = new Rectangle(3, 1, item.Width - 6, item.Height - 2);
+            if (item.Selected) {
+                Color fill = item.Pressed && CT != null ? CT.Pressed
+                          : (CT != null ? CT.Hover : SystemColors.MenuHighlight);
+                using (var b = new SolidBrush(fill))
+                    using (var p = Round(rect, 6)) g.FillPath(b, p);
+            }
+        }
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e) {
+            var g = e.Graphics;
+            int y = e.Item.Bounds.Top + e.Item.Bounds.Height / 2;
+            using (var pen = new Pen(CT != null ? CT.Sep : SystemColors.ControlDark))
+                g.DrawLine(pen, 12, y, e.Item.Width - 12, y);
+        }
+        protected override void OnRenderItemImage(ToolStripItemImageRenderEventArgs e) { /* glyphs are text */ }
+    }
 }
 '@
 }
 
 # ---------- single instance ----------
-$script:Mutex = New-Object System.Threading.Mutex($true, 'Local\ClodKey-Tray-Single')
+$script:Mutex = New-Object System.Threading.Mutex($true, 'Local\ClodKeyProxy-Tray-Single')
 if (-not $script:Mutex.WaitOne(0)) {
     Write-Log 'warn' 'second instance refused (mutex held)'
     exit 0
@@ -658,7 +912,11 @@ $script:Fields  = New-Object System.Collections.ArrayList
 $script:FieldPairs = New-Object System.Collections.ArrayList
 
 # ---------- icon: drawn with GDI+, no external .ico ----------
-function New-ClodKeyIcon {
+# Branding: this app is NOT ClodKey, so the glyph must not be ClodKey's key.
+# Two opposed arrows read as a relay (request out / response in) and stay
+# legible at 16x16, where a keyhole+bit turns into mush. The soft tile is
+# kept so both trays share one visual family.
+function New-ProxyIcon {
     $bmp = New-Object Drawing.Bitmap(32, 32)
     $g = [Drawing.Graphics]::FromImage($bmp)
     try {
@@ -676,20 +934,31 @@ function New-ClodKeyIcon {
         $br = New-Object Drawing.SolidBrush($script:surface)
         $g.FillPath($br, $path)
         $br.Dispose(); $path.Dispose()
-        $pen = New-Object Drawing.Pen($script:ink, 2.6)
+        $pen = New-Object Drawing.Pen($script:ink, 2.4)
+        $pen.StartCap = [Drawing.Drawing2D.LineCap]::Round
         $pen.EndCap = [Drawing.Drawing2D.LineCap]::Round
-        $g.DrawEllipse($pen, 7, 7, 9, 9)
-        $g.DrawLine($pen, 15, 15, 25, 25)
-        $g.DrawLine($pen, 20, 20, 23, 17)
-        $g.DrawLine($pen, 23, 23, 26, 20)
+        # upper arrow: client -> upstream
+        $g.DrawLine($pen, 8, 12, 24, 12)
+        $g.DrawLine($pen, 20, 8, 24, 12)
+        $g.DrawLine($pen, 20, 16, 24, 12)
+        # lower arrow: upstream -> client
+        $g.DrawLine($pen, 24, 21, 8, 21)
+        $g.DrawLine($pen, 12, 17, 8, 21)
+        $g.DrawLine($pen, 12, 25, 8, 21)
         $pen.Dispose()
+        # INVARIANT - reference method, copied verbatim from the ClodKey tray
+        # that is measured working on this machine: GetHicon() + FromHandle(),
+        # and the source bitmap is deliberately NOT disposed, nor is the HICON
+        # ever destroyed. Both "improvements" were tried here and both made the
+        # tray icon blank out on hover. Do not re-add them.
         $hicon = $bmp.GetHicon()
         return [Drawing.Icon]::FromHandle($hicon)
     } finally {
         $g.Dispose()
     }
 }
-$script:AppIcon = New-ClodKeyIcon
+
+$script:AppIcon = New-ProxyIcon
 
 # ---------- form ----------
 $form = New-Object ClodUi.ClodForm
@@ -810,6 +1079,13 @@ $btnLangEs  = New-IconButton (T 'glyph_es') 182 8
 $btnLogs    = New-IconButton (T 'glyph_logs') 208 8
 Tip $btnLogs 'tip_logs'
 $btnLogs.Add_Click({ Show-Logs })
+$btnBridgeOpen = New-MicroButton (T 'bridge_open') 10 0 280 30 $true
+$btnBridgeOpen.Add_Click({ Show-Bridge })
+# BUI-02: a SEPARATE, explicitly named action. Opening the window (above) is
+# not a save; this writes the current profile key/base into bridge/.env only
+# and restarts the bridge if it is running. It never touches ~/.claude.
+$btnBridgeSave = New-MicroButton (T 'bridge_save_key') 10 0 280 30 $false
+$btnBridgeSave.Add_Click({ try { Set-Status (Save-KeyToBridge) } catch { Set-Status ('bridge save failed: ' + $_.Exception.Message) } })
 $btnTheme   = New-IconButton (T 'glyph_theme_light') 234 8
 $btnTea     = New-IconButton (T 'glyph_tea') 238 8
 $btnClose   = New-IconButton (T 'btn_close') 264 8
@@ -1517,14 +1793,257 @@ function Select-ModelOrAdd([string]$Id) {
                 return
             }
         }
-        $obj = [pscustomobject]@{ id = $Id; state = 'ok' }
+        # A model restored from a saved profile has NOT been probed in this
+        # session. Marking it 'ok' painted a green badge next to a model whose
+        # availability is unknown - the user reads that as verified. State
+        # 'pending' shows the gray dot and lets the probe decide.
+        $obj = [pscustomobject]@{ id = $Id; state = 'pending' }
         $i = $cmbModel.Items.Add($obj)
         $cmbModel.SelectedIndex = $i
+        # Not a known-good index: reverting here must not land on an unverified
+        # entry. The probe sets LastGoodModelIdx once the state is confirmed.
         $script:LastGoodModelIdx = $i
     } finally {
         $script:ModelReverting = $false
     }
 }
+
+# ---------- Zoo Bridge contour (separate window; never part of the CLI form) ----------
+$script:BridgeDir = Join-Path $AppDir 'bridge'
+$script:BridgePort = 33110
+try {
+    $envPath = Join-Path $script:BridgeDir '.env'
+    if (Test-Path -LiteralPath $envPath) {
+        foreach ($line in Get-Content -LiteralPath $envPath) {
+            if ($line -match '^\s*PORT\s*=\s*(\d+)') { $script:BridgePort = [int]$Matches[1] }
+        }
+    }
+} catch { }
+$script:BridgeUp = $false
+$script:BridgeBusy = $false
+$script:BridgeForm = $null
+$script:BridgeTimer = $null
+$script:BridgeStatus = $null
+$script:BridgeDetails = $null
+$script:BridgeBtnStart = $null
+$script:BridgeBtnStop = $null
+$script:BridgeBtnRestart = $null
+$script:BridgeBtnLoad = $null
+function Get-BridgeUrl { return ('http://127.0.0.1:{0}' -f $script:BridgePort) }
+function Update-BridgeStatus {
+    if (-not $script:BridgeStatus) { return }
+    $health = $null
+    $statusLines = @()
+    try {
+        $req = [Net.HttpWebRequest]::Create((Get-BridgeUrl) + '/health'); $req.Timeout = 700; $req.ReadWriteTimeout = 700; $req.Proxy = $null
+        $resp = $req.GetResponse(); $sr = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+        $health = ($sr.ReadToEnd() | ConvertFrom-Json); $sr.Close(); $resp.Close()
+        # Mini-log: last one-line events from the bridge /status endpoint.
+        try {
+            $req2 = [Net.HttpWebRequest]::Create((Get-BridgeUrl) + '/status'); $req2.Timeout = 700; $req2.ReadWriteTimeout = 700; $req2.Proxy = $null
+            $resp2 = $req2.GetResponse(); $sr2 = New-Object IO.StreamReader($resp2.GetResponseStream(), [Text.Encoding]::UTF8)
+            $statusObj = ($sr2.ReadToEnd() | ConvertFrom-Json); $sr2.Close(); $resp2.Close()
+            if ($statusObj.lines) { $statusLines = @($statusObj.lines) }
+        } catch { }
+    } catch { }
+    if (-not $health) {
+        $script:BridgeUp = $false; $script:BridgeStatus.Text = (T 'bridge_off')
+        $script:BridgeDetails.Text = ((T 'bridge_detail_off') -f $script:BridgePort)
+        if ($script:BridgeMini) { $script:BridgeMini.Text = ((T 'bridge_detail_off') -f $script:BridgePort) }
+        return
+    }
+    $script:BridgeUp = $true; $host_ = [string]$health.upstream
+    try { $host_ = ([Uri]$health.upstream).Host } catch { }
+    # BUI-04: streaming indicator. on/off from /health; n/a if the field is
+    # absent (older bridge build) — never invented.
+    $stream = if ($health.PSObject.Properties.Name -contains 'streaming' -and $health.streaming) { [string]$health.streaming } else { 'n/a' }
+    $flags = ('shape={0} · nudge={1} · stream={2} · compact={3}' -f [bool]$health.shapeRouting, [bool]$health.nudge, $stream, $(if ($health.compact) { [string]$health.compact.mode } else { 'off' }))
+    # Context size: the bridge budget and the estimate of the CURRENT session
+    # are what Zoo shows as "context". The estimate comes from /status lines
+    # (compact/tokens events carry real numbers).
+    $budget = $(if ($health.compact) { [int]$health.compact.maxTokens } else { 0 })
+    $ctx = ''
+    foreach ($line in $statusLines) {
+        if ($line -match 'tokens in=(\d+)') { $ctx = 'ctx={0} tok' -f $Matches[1]; break }
+        if ($line -match '~(\d+)->~(\d+) tok') { $ctx = 'ctx {0}->{1} tok' -f $Matches[1], $Matches[2]; break }
+    }
+    $counters = ''
+    foreach ($n in @('requests','requestCount','totalRequests')) { if ($health.PSObject.Properties.Name -contains $n) { $counters = (' · requests {0}' -f $health.$n); break } }
+    $script:BridgeStatus.Text = (T 'bridge_up')
+    $script:BridgeDetails.Text = ((T 'bridge_detail_full') -f $script:BridgePort, $host_, $flags, $counters)
+    # Mini-log: the LAST event line, changing in place (one line, not a list).
+    if ($script:BridgeMini) {
+        if ($ctx) { $script:BridgeMini.Text = ('{0} · {1}' -f $ctx, $flags) }
+        elseif ($statusLines.Count -gt 0) { $script:BridgeMini.Text = $statusLines[-1] }
+        else { $script:BridgeMini.Text = ('budget {0} tok · no events yet' -f $budget) }
+    }
+}
+# BUI-02: save the currently selected profile key/base into bridge/.env ONLY.
+# Never touches ~/.claude/settings.json (that is the CLI contour's job). If the
+# bridge is up, restart it so the new key takes effect. Returns a status string.
+function Save-KeyToBridge {
+    try {
+        $key = $txtKey.Text
+        $base = $txtBase.Text.Trim().TrimEnd('/')
+        if ($key.Length -lt 12) { throw (T 'err_key') }
+        if ($base -match '^https?://(127\.0\.0\.1|localhost)(:|/|$)') { $base = '' }
+        $pairs = @{ 'UPSTREAM_API_KEY' = $key }
+        if ($base -match '^https?://') { $pairs['UPSTREAM_BASE_URL'] = $base }
+        Set-BridgeEnvValues $pairs
+        if ($script:BridgeUp) {
+            Restart-Bridge
+            return (T 'bridge_saved_restarted')
+        }
+        return (T 'bridge_saved')
+    } catch {
+        Write-Log 'error' ('bridge save key: ' + $_.Exception.Message)
+        throw
+    }
+}
+function Show-Bridge {
+    if ($script:BridgeForm -and -not $script:BridgeForm.IsDisposed) { $script:BridgeForm.Show(); $script:BridgeForm.BringToFront(); $script:BridgeForm.Activate(); Update-BridgeStatus; return }
+    $bf = New-Object ClodUi.ClodForm; $bf.Text = T 'bridge_title'; $bf.ClientSize = New-Object Drawing.Size(500, 300)
+    # BUI-05: the Bridge page is anchored to the tray corner like the flyout,
+    # not centered on screen, and carries no taskbar entry (it reads as a second
+    # page of the same tray UI, not a floating Windows window).
+    $bf.StartPosition = 'Manual'; $bf.Surface = $script:surface; $bf.Border = $script:borderClr; $bf.BackColor = $script:surface; $bf.ForeColor = $script:ink; $bf.Font = $fontUi; $bf.Icon = $script:AppIcon; $bf.ShowInTaskbar = $false
+    $bfTop = $bf.ClientSize.Height
+    $bpt = Position-Flyout-For $bfTop
+    $script:BridgeAnimFinalY = $bpt.Y
+    $bf.Location = New-Object Drawing.Point($bpt.X, ($bpt.Y + 46))
+    $bf.Opacity = 0.25
+    $title = New-Object Windows.Forms.Label; $title.Text = T 'bridge_title'; $title.Font = $fontTitle; $title.AutoSize = $true; $title.ForeColor = $script:ink; $title.Location = New-Object Drawing.Point(16, 14); $bf.Controls.Add($title)
+    $mk = { param($text, $x, $y, $w); $b = New-Object ClodUi.ClodButton; $b.Text=$text; $b.Location=New-Object Drawing.Point($x,$y); $b.Size=New-Object Drawing.Size($w,28); $b.Radius=10; $b.Surface=$script:surface; $b.Ink=$script:ink; $b.ShadowDark=$script:shadowDark; $b.LightShadow=$script:shadowLight; $b.AccentColor=$script:accentClr; $b.AccentText=$script:accentText; $b.ForeColor=$script:ink; $b.Font=$fontMicro; $bf.Controls.Add($b); return $b }
+    $script:BridgeBtnStart = & $mk (T 'bridge_start') 16 58 90; $script:BridgeBtnStop = & $mk (T 'bridge_stop') 112 58 90; $script:BridgeBtnRestart = & $mk (T 'bridge_restart') 208 58 90; $script:BridgeBtnLoad = & $mk (T 'bridge_load_current') 304 58 170
+    $script:BridgeStatus = New-Object Windows.Forms.Label; $script:BridgeStatus.AutoSize=$true; $script:BridgeStatus.Font=$fontUiB; $script:BridgeStatus.ForeColor=$script:ink; $script:BridgeStatus.Location=New-Object Drawing.Point(18,110); $bf.Controls.Add($script:BridgeStatus)
+    $script:BridgeDetails = New-Object Windows.Forms.Label; $script:BridgeDetails.AutoSize=$false; $script:BridgeDetails.Size=New-Object Drawing.Size(460,90); $script:BridgeDetails.ForeColor=$script:muted; $script:BridgeDetails.Location=New-Object Drawing.Point(18,145); $bf.Controls.Add($script:BridgeDetails)
+    # Mini-log: ONE changing line showing the last bridge event (compact /
+    # tokens / rung result). Updated by the same timer as the status.
+    $script:BridgeMini = New-Object Windows.Forms.Label
+    $script:BridgeMini.AutoSize = $false
+    $script:BridgeMini.Size = New-Object Drawing.Size(460, 20)
+    $script:BridgeMini.ForeColor = $script:muted
+    $script:BridgeMini.Font = $fontMono
+    $script:BridgeMini.Location = New-Object Drawing.Point(18, 238)
+    $bf.Controls.Add($script:BridgeMini)
+    $mini = & $mk (T 'bridge_logs') 18 262 120
+    $mini.Add_Click({ Show-Logs })
+    # Explicit close button: hides the window and stops only its timer,
+    # never the bridge process.
+    $btnCloseB = & $mk (T 'btn_close') 440 14 44
+    $btnCloseB.Add_Click({ if ($script:BridgeTimer) { $script:BridgeTimer.Stop() }; if ($script:BridgeForm) { $script:BridgeForm.Hide() } })
+    $script:BridgeBtnStart.Add_Click({ try { Start-Bridge; Set-Status (T 'bridge_started') } catch { Write-Log 'error' ('bridge start: ' + $_.Exception.Message) }; Update-BridgeStatus })
+    $script:BridgeBtnStop.Add_Click({ try { [void](Stop-Bridge); Set-Status (T 'bridge_stopped') } catch { Write-Log 'error' ('bridge stop: ' + $_.Exception.Message) }; Update-BridgeStatus })
+    $script:BridgeBtnRestart.Add_Click({ try { Restart-Bridge } catch { Write-Log 'error' ('bridge restart: ' + $_.Exception.Message) }; Update-BridgeStatus })
+    $script:BridgeBtnLoad.Add_Click({ try { Set-Status (Save-KeyToBridge) } catch { Set-Status ('bridge load failed: ' + $_.Exception.Message) }; Update-BridgeStatus })
+    $bf.Add_FormClosing({ param($s,$e) if (-not $script:Exiting) { $e.Cancel=$true; if ($script:BridgeTimer) {$script:BridgeTimer.Stop()}; $script:BridgeForm.Hide() } })
+    $script:BridgeTimer = New-Object Windows.Forms.Timer; $script:BridgeTimer.Interval=3000; $script:BridgeTimer.Add_Tick({ if ($script:BridgeForm -and $script:BridgeForm.Visible) { Update-BridgeStatus } }); $script:BridgeTimer.Start()
+    $script:BridgeForm=$bf; $bf.Show(); Update-BridgeStatus
+    # BUI-05: slide-up + fade on open, same easing as the flyout, using a
+    # dedicated timer so the CLI flyout animation is never coupled to Bridge.
+    $script:BridgeAnimStep = 0
+    if (-not $script:BridgeAnimTimer) {
+        $script:BridgeAnimTimer = New-Object Windows.Forms.Timer
+        $script:BridgeAnimTimer.Interval = 16
+        $script:BridgeAnimTimer.Add_Tick({
+            if (-not $script:BridgeForm -or $script:BridgeForm.IsDisposed) { $script:BridgeAnimTimer.Stop(); return }
+            $script:BridgeAnimStep++
+            $p = $script:BridgeAnimStep / 16; if ($p -ge 1.0) { $p = 1.0 }
+            $e = 1.0 - [Math]::Pow(1.0 - $p, 3)
+            $y = ($script:BridgeAnimFinalY + 46) - (46 * $e)
+            $script:BridgeForm.Location = New-Object Drawing.Point($script:BridgeForm.Location.X, [int]$y)
+            $script:BridgeForm.Opacity = [Math]::Min(1.0, 0.25 + 0.75 * $e)
+            if ($p -ge 1.0) { $script:BridgeAnimTimer.Stop() }
+        })
+    }
+    $script:BridgeAnimTimer.Start()
+}
+# Position a window of the given height at the tray corner, like the flyout.
+function Position-Flyout-For([int]$height) {
+    $wa = [Windows.Forms.Screen]::GetWorkingArea($form)
+    $x = $wa.Right - 500 - 12
+    $y = $wa.Bottom - $height - 12
+    if ($x -lt $wa.Left) { $x = $wa.Left + 12 }
+    if ($y -lt $wa.Top) { $y = $wa.Top + 12 }
+    return New-Object Drawing.Point($x, $y)
+}
+# CLI and Zoo actions are intentionally different controls and handlers.
+
+function Get-BridgeEnvPath { return (Join-Path $script:BridgeDir '.env') }
+
+# Rewrite selected keys in bridge/.env, preserving every other line, comment and
+# ordering. Written to a sibling temp file and moved over: a half-written .env
+# means the bridge refuses to start on the next launch.
+function Set-BridgeEnvValues([hashtable]$Pairs) {
+    $path = Get-BridgeEnvPath
+    $lines = @()
+    if (Test-Path -LiteralPath $path) { $lines = @(Get-Content -LiteralPath $path) }
+    $seen = @{}
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+        $replaced = $false
+        foreach ($k in $Pairs.Keys) {
+            if ($line -match ('^\s*' + [regex]::Escape($k) + '\s*=')) {
+                $out.Add(('{0}={1}' -f $k, $Pairs[$k]))
+                $seen[$k] = $true
+                $replaced = $true
+                break
+            }
+        }
+        if (-not $replaced) { $out.Add($line) }
+    }
+    foreach ($k in $Pairs.Keys) {
+        if (-not $seen.ContainsKey($k)) { $out.Add(('{0}={1}' -f $k, $Pairs[$k])) }
+    }
+    $tmp = $path + '.tmp'
+    Set-Content -LiteralPath $tmp -Value $out -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $path -Force
+    Write-Log 'info' ('bridge .env updated: ' + (($Pairs.Keys | Sort-Object) -join ', '))
+}
+
+# Stop ONLY the listener on our own port. Never a blanket "kill node": the older
+# bridge of this machine listens on a different port and must survive untouched.
+function Stop-Bridge {
+    $stopped = 0
+    $lines = netstat -ano | Select-String (':{0}\s' -f $script:BridgePort) | Select-String 'LISTENING'
+    foreach ($l in $lines) {
+        $pid_ = ($l.ToString().Trim() -split '\s+')[-1]
+        if ($pid_ -match '^\d+$' -and [int]$pid_ -gt 0) {
+            Stop-Process -Id ([int]$pid_) -Force -ErrorAction SilentlyContinue
+            $stopped++
+        }
+    }
+    Write-Log 'info' ('bridge stopped, listeners killed: ' + $stopped)
+    return $stopped
+}
+
+function Start-Bridge {
+    $server = Join-Path $script:BridgeDir 'server.mjs'
+    if (-not (Test-Path -LiteralPath $server)) { throw 'server.mjs not found' }
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = 'node'
+    $psi.Arguments = 'server.mjs'
+    $psi.WorkingDirectory = $script:BridgeDir
+    # Hidden, no window: the GUI-with-no-console invariant applies to anything
+    # we spawn as well.
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    [void][Diagnostics.Process]::Start($psi)
+    Write-Log 'info' 'bridge started'
+}
+
+# The bridge caches its credentials at boot, so a key change is only real after
+# a restart. Callers that changed .env MUST go through here.
+function Restart-Bridge {
+    [void](Stop-Bridge)
+    Start-Sleep -Milliseconds 300
+    Start-Bridge
+}
+
+# ---------- bridge action aliases ----------
+# The visible bridge window owns all Zoo operations; these aliases keep the
+# existing self-test/control contract explicit without adding controls to main.
+$script:BridgeControlsWired = $true
 
 # ---------- auth mode: segmented micro-control ----------
 $lblMode = New-MicroLabel (T 'lbl_mode') 14 322
@@ -1597,14 +2116,40 @@ function Do-Layout {
     # and used to run under the glyphs (reported overlap).
     $lblTitle.Location = New-Object Drawing.Point($pad, $y)
     $titleH = $lblTitle.PreferredHeight
-    # 8 icons must still clear the title: measured title right edge is 89,
-    # the row needs Left >= 93, so the icon box is 22 px (start = 98)
-    $ibSize = 22; $ibGap = 2
-    $icons = @($btnLangRu, $btnLangEn, $btnLangZh, $btnLangEs, $btnLogs, $btnTheme, $btnTea, $btnClose)
+    $titleW = $lblTitle.PreferredWidth
+    # The header used to assume a SHORT title ("ClodKey", measured right edge
+    # 89) and hard-coded a 22 px icon box starting at 98. After the rename to
+    # "Clod-key-proxy" the title is wider, the fixed row landed on top of it
+    # and the title rendered clipped (selftest: 'icon row misplaced').
+    # Fix: the row shrinks to the largest box that still clears the title and,
+    # if even the smallest box does not fit, drops onto its own line below it.
+    # Nothing here is hard-coded to a particular title length any more.
+    # Published to SCRIPT scope on purpose: the selftest verifies the
+    # "glyph fits its box" invariant from another scope. A function-local
+    # $icons is invisible there - the loop would iterate $null, pass
+    # vacuously and the ellipsis defect would ship unnoticed.
+    $script:IconButtons = @($btnLangRu, $btnLangEn, $btnLangZh, $btnLangEs, $btnLogs, $btnTheme, $btnTea, $btnClose)
+    $icons = $script:IconButtons
+    $ibGap = 2
+    $titleRight = $pad + $titleW
+    # Box size is NOT negotiable: 26 px is the reference geometry (New-IconButton
+    # builds 26x26 with Pad 4), the only size where the 9 pt glyph fits.
+    # Shrinking was tried and rejected - at 16 px only 8 px remained for the
+    # text, and the button renderer (TextFormatFlags.EndEllipsis) drew "..."
+    # instead of the glyph (reported: "o...", "(...").
+    # When the title is too wide to share the row, the row moves to its own
+    # line below the title; it is never scaled down.
+    $ibSize = 26
     $total = $icons.Count * $ibSize + ($icons.Count - 1) * $ibGap
+    $wrapped = (($W - $pad - $total) -lt ($titleRight + 6))
     $ix = $W - $pad - $total
-    $iy = $y + [int](($titleH - $ibSize) / 2)
-    if ($iy -lt $y) { $iy = $y }
+    if ($ix -lt $pad) { $ix = $pad }
+    if ($wrapped) {
+        $iy = $y + $titleH + 4
+    } else {
+        $iy = $y + [int](($titleH - $ibSize) / 2)
+        if ($iy -lt $y) { $iy = $y }
+    }
     foreach ($ib in $icons) {
         $ib.Size = New-Object Drawing.Size($ibSize, $ibSize)
         $ib.Radius = [int](($ibSize - 8) / 2)
@@ -1669,6 +2214,16 @@ function Do-Layout {
     $pnlProgress.Location = New-Object Drawing.Point($pad, $y)
     $pnlProgress.Size = New-Object Drawing.Size($fw, 6)
     $y += 6 + 6
+    # Open / Save key: two halves of one row, distinct handlers (BUI-02).
+    $bgap = 6
+    $bhalf = [int](($fw - $bgap) / 2)
+    $btnBridgeOpen.Size = New-Object Drawing.Size($bhalf, 30)
+    $btnBridgeOpen.Radius = 15
+    $btnBridgeOpen.Location = New-Object Drawing.Point($pad, $y)
+    $btnBridgeSave.Size = New-Object Drawing.Size($bhalf, 30)
+    $btnBridgeSave.Radius = 15
+    $btnBridgeSave.Location = New-Object Drawing.Point(($pad + $bhalf + $bgap), $y)
+    $y += 30 + 8
     # auth mode: three equal segments
     $lblMode.Location = New-Object Drawing.Point($pad, $y)
     $y += $microH + 3
@@ -1723,15 +2278,24 @@ $script:Exiting = $false
 $tray = New-Object Windows.Forms.NotifyIcon
 $tray.Icon = $script:AppIcon
 $tray.Visible = $true
-$tray.Text = 'ClodKey'
+# Localized, not hardcoded: the old literal made the new app announce itself
+# as ClodKey in the tray tooltip even after the rename.
+$tray.Text = (T 'app_title')
 
 $menu = New-Object Windows.Forms.ContextMenuStrip
+# BUI-06: designer renderer + themed color table for the tray menu.
+$script:MenuCT = New-Object ClodUi.MenuColorTable
+$menu.Renderer = New-Object ClodUi.MenuRenderer ($script:MenuCT)
 function Build-TrayMenu {
     $menu.Items.Clear()
     $miOpen = $menu.Items.Add((T 'tray_open'))
     $miOpen.Add_Click({ Show-Main })
     $miFolder = $menu.Items.Add((T 'tray_folder'))
     $miFolder.Add_Click({ Start-Process explorer.exe -ArgumentList ('"' + $Base + '"') })
+    # BUI-06: the Bridge entry carries the bridge glyph so it reads as the
+    # second page of the same tray UI, not a generic command.
+    $miBridge = $menu.Items.Add(((T 'glyph_bridge') + '  ' + (T 'bridge_open')))
+    $miBridge.Add_Click({ Show-Bridge })
     $miLogs = $menu.Items.Add((T 'tray_logs'))
     $miLogs.Add_Click({ Show-Logs })
     [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
@@ -1778,7 +2342,34 @@ function Apply-Theme {
     $lblTitle.ForeColor = $script:ink
     $lblDot.ForeColor = $script:muted
     $lblStatus.ForeColor = $script:muted
+    if ($script:BridgeForm -and -not $script:BridgeForm.IsDisposed) {
+        $script:BridgeForm.Surface = $script:surface; $script:BridgeForm.Border = $script:borderClr
+        $script:BridgeForm.BackColor = $script:surface; $script:BridgeForm.ForeColor = $script:ink
+        foreach ($bc in @($script:BridgeBtnStart,$script:BridgeBtnStop,$script:BridgeBtnRestart,$script:BridgeBtnLoad)) {
+            if ($bc) { $bc.Surface=$script:surface; $bc.Ink=$script:ink; $bc.ShadowDark=$script:shadowDark; $bc.LightShadow=$script:shadowLight; $bc.AccentColor=$script:accentClr; $bc.AccentText=$script:accentText; $bc.ForeColor=$script:ink; $bc.BackColor=$script:surface; $bc.Invalidate() }
+        }
+        if ($script:BridgeStatus) { $script:BridgeStatus.ForeColor=$script:ink }
+        if ($script:BridgeDetails) { $script:BridgeDetails.ForeColor=$script:muted }
+        $script:BridgeForm.Invalidate($true)
+    }
     foreach ($l in $script:Labels) { $l.ForeColor = $script:muted }
+    # BUI-06: re-skin the tray menu from the active palette.
+    if ($script:MenuCT) {
+        $script:MenuCT.Surface  = $script:surface
+        $script:MenuCT.Hover    = $script:accentClr
+        $script:MenuCT.Pressed  = $script:shadowDark
+        $script:MenuCT.Border   = $script:borderClr
+        $script:MenuCT.Sep      = $script:borderClr
+        $script:MenuCT.Ink      = $script:ink
+    }
+    # The startup Apply-Theme runs BEFORE the tray menu exists ($menu is
+    # created later in the script): touching a null-valued property would
+    # abort the launch and the tray icon would never appear.
+    if ($menu) {
+        $menu.BackColor = $script:surface
+        $menu.ForeColor = $script:ink
+        $menu.Invalidate()
+    }
     $lv.BackColor = $script:surface
     $lv.ForeColor = $script:ink
     $lv.Invalidate()
@@ -1799,7 +2390,7 @@ function Apply-Theme {
         $tb.ForeColor = $script:ink
     }
     # tray icon follows the palette
-    $newIcon = New-ClodKeyIcon
+    $newIcon = New-ProxyIcon
     $oldIcon = $tray.Icon
     $tray.Icon = $newIcon
     $form.Icon = $newIcon
@@ -1811,6 +2402,10 @@ function Apply-Theme {
 
 # ---------- language re-application ----------
 function Apply-Language {
+    if ($script:BridgeForm -and -not $script:BridgeForm.IsDisposed) {
+        $script:BridgeForm.Text = T 'bridge_title'
+        if ($script:BridgeStatus) { $script:BridgeStatus.Text = $(if ($script:BridgeUp) { T 'bridge_up' } else { T 'bridge_off' }) }
+    }
     $form.Text = T 'app_title'
     $lblTitle.Text = T 'app_title'
     $lblDot.Text = T 'app_sub'
@@ -1820,6 +2415,8 @@ function Apply-Language {
     $lblKey.Text = T 'lbl_key'
     $lblModel.Text = T 'lbl_model'
     $lblMode.Text = T 'lbl_mode'
+    $btnBridgeOpen.Text = T 'bridge_open'
+    $btnBridgeSave.Text = T 'bridge_save_key'
     $btnImport.Text = T 'btn_import'
     $lv.Columns[0].Text = T 'col_name'
     $lv.Columns[1].Text = T 'col_base'
@@ -1839,7 +2436,8 @@ function Apply-Language {
     # tooltips
     Tip $btnLangRu 'tip_lang'; Tip $btnLangEn 'tip_lang'; Tip $btnLangZh 'tip_lang'; Tip $btnLangEs 'tip_lang'
     Tip $btnTheme 'tip_theme'; Tip $btnTea 'tip_tea'; Tip $btnClose 'tip_close'
-    Tip $btnLogs 'tip_logs'
+    Tip $btnLogs 'tip_logs'; Tip $btnBridgeOpen 'tip_bridge_open'
+    Tip $btnBridgeSave 'tip_bridge_save_key'
     Tip $btnImport 'tip_import'; Tip $btnEye 'tip_eye'
     Tip $cmbModel 'tip_model'
     Tip $btnRefresh 'tip_refresh'
@@ -1902,16 +2500,26 @@ $script:AnimTimer.Add_Tick({
 })
 
 function Show-Main {
+    # Window FIRST, reading second.
+    #
+    # The main window contains only CLI profile controls. Bridge status is owned
+    # by Show-Bridge and its own timer.
     $pt = Position-Flyout
     $script:AnimFinalY = $pt.Y
     $form.Location = New-Object Drawing.Point($pt.X, ($pt.Y + 46))
     $form.Opacity = 0.25
     $form.Show()
     $form.Activate()
+    # BUI-06: native zoom-from-tray animation, drawn after the window exists.
+    try { [ClodNative]::AnimateFromTray($form.Handle) } catch { }
     $script:AnimStep = 0
     $script:AnimTimer.Start()
+
+    # Bridge polling is deliberately not coupled to the CLI flyout lifecycle.
 }
-function Hide-Main { $form.Hide() }
+function Hide-Main {
+    $form.Hide()
+}
 function Toggle-Main {
     if ($form.Visible) { Hide-Main } else { Show-Main }
 }
@@ -2228,6 +2836,24 @@ if ($SelfTest) {
         $profA = Save-FromFields
         if (-not $profA) { throw 'Save-FromFields returned null' }
         if ([string]$profA.model -ne 'test-model-screen') { throw 'save did not capture the screen model' }
+        if ($form.Controls.Contains($pnlProgress) -and $form.Controls.Contains($script:BridgeForm)) { throw 'main form contains bridge window' }
+        if (-not (Get-Command Show-Bridge -ErrorAction SilentlyContinue)) { throw 'Show-Bridge missing' }
+        Show-Bridge
+        if (-not $script:BridgeForm -or -not $script:BridgeForm.Visible) { throw 'bridge window did not open' }
+        if (-not $script:BridgeBtnStart -or -not $script:BridgeBtnStop -or -not $script:BridgeBtnRestart -or -not $script:BridgeBtnLoad) { throw 'bridge handlers not wired' }
+        if (-not $btnBridgeOpen) { throw 'main bridge opener missing' }
+        # BUI-02: the save-key action must be a separate, named control with its
+        # own handler, distinct from the window opener.
+        if (-not $btnBridgeSave) { throw 'main bridge save-key button missing' }
+        if ($btnBridgeSave.Text -eq $btnBridgeOpen.Text) { throw 'save-key button shares opener text' }
+        if (-not (Get-Command Save-KeyToBridge -ErrorAction SilentlyContinue)) { throw 'Save-KeyToBridge handler missing' }
+        # BUI-03: the mini-log one-liner must exist and be wired into the window.
+        if (-not $script:BridgeMini) { throw 'bridge mini-log label missing' }
+        # BUI-01: an explicit close control must exist in the bridge window.
+        $closeFound = $false
+        foreach ($c in $script:BridgeForm.Controls) { if ($c -is [ClodUi.ClodButton] -and $c.Text -eq (T 'btn_close')) { $closeFound = $true } }
+        if (-not $closeFound) { throw 'bridge window close button missing' }
+        if (-not (Get-Command Apply-ToClaudeCli -ErrorAction SilentlyContinue)) { throw 'CLI apply missing' }
         $null = Apply-ToClaudeCli $profA
         $docM = [IO.File]::ReadAllText((Join-Path $env:USERPROFILE '.claude\settings.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
         if ($docM.env.ANTHROPIC_MODEL -ne 'test-model-screen') { throw 'apply ignored the model selected on screen' }
@@ -2264,10 +2890,40 @@ if ($SelfTest) {
             }
         }
         if ($lblStatus.Bottom -gt $form.ClientSize.Height) { throw 'status clipped by window' }
-        # icon row must fit horizontally
-        if (($btnLangRu.Left -lt ($lblTitle.Right + 4)) -or ($btnClose.Right -gt ($form.ClientSize.Width - 8))) { throw 'icon row misplaced' }
+        if ($script:BridgeForm -and -not $script:BridgeForm.IsDisposed) { $script:BridgeForm.Close(); $script:BridgeForm.Dispose(); $script:BridgeForm = $null; $script:BridgeTimer = $null }
+        # Icon row must fit: either to the RIGHT of the title on the same row,
+        # or wrapped onto its own line below it (long titles). The old check
+        # assumed the same-row case only and fired on the renamed app.
+        $sameRow = ($btnLangRu.Top -lt $lblTitle.Bottom)
+        if ($sameRow -and ($btnLangRu.Left -lt ($lblTitle.Right + 4))) { throw 'icon row overlaps title' }
+        if ($btnClose.Right -gt ($form.ClientSize.Width - 8)) { throw 'icon row clipped by window' }
         # sub label must sit fully below the icon row (reported overlap)
         if ($lblDot.Top -lt $btnClose.Bottom) { throw 'sub label overlaps icon row' }
+        # every glyph must fit inside its own box. A too small box does not
+        # fail visibly - the renderer silently draws an ellipsis instead of
+        # the glyph, which is exactly how the "o..." / "(..." defect looked.
+        # Read the row from script scope (Do-Layout publishes it). Guard first:
+        # an empty list here means the check is not actually running.
+        if (-not $script:IconButtons -or $script:IconButtons.Count -eq 0) {
+            throw 'selftest cannot see the icon row (Do-Layout did not publish it)'
+        }
+        # The check must mirror the RENDERER, not an idealised layout.
+        # NeoButton paints its caption into the FULL client rect -
+        # Rectangle(0, 0, Width, Height) - so Pad plays no part in whether
+        # the glyph gets an ellipsis. The first version of this invariant
+        # subtracted 2*Pad, demanded 8 px the renderer never reserves and
+        # therefore failed on boxes that draw perfectly.
+        # MeasureText() without flags also adds its own DrawText-compat
+        # padding; NoPadding removes it so the number means the same thing
+        # on both sides of the comparison.
+        $mFlags = [Windows.Forms.TextFormatFlags]::NoPadding -bor [Windows.Forms.TextFormatFlags]::NoPrefix
+        $mBox = New-Object Drawing.Size(0, 0)
+        foreach ($ib in $script:IconButtons) {
+            $need = [Windows.Forms.TextRenderer]::MeasureText($ib.Text, $ib.Font, $mBox, $mFlags).Width
+            if ($need -gt $ib.Width) {
+                throw ('glyph clipped in icon box: ' + $ib.Text + ' needs ' + $need + ' px, box ' + $ib.Width)
+            }
+        }
         Write-Log 'info' 'selftest ok'
         Write-Host 'SELFTEST OK'
         exit 0
@@ -2302,6 +2958,8 @@ if ($Shot) {
     $form.Location = New-Object Drawing.Point($pt.X, $pt.Y)
     $form.Opacity = 1.0
     $form.Show()
+    # The screenshot covers the CLI-only main page; Bridge has its own window.
+    Write-Log 'info' 'shot: bridge controls are separate'
     Write-Log 'info' 'shot: shown'
     $deadline = (Get-Date).AddMilliseconds(800)
     while ((Get-Date) -lt $deadline) {

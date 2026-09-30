@@ -1,11 +1,17 @@
-# G22 gate: zero console windows owned by ClodKey processes.
+# G22 gate: zero console windows owned by ClodKeyProxy processes.
 # Run after deploy. Exit 1 if any ConsoleWindowClass/CASCADIA window
 # belongs to our process tree. ASCII only.
+#
+# Adapted from the v1 gate: the process match is now ClodKeyProxy.ps1
+# (it was ClodKey.ps1 before the rename), and the wscript host that
+# launches it through run-hidden.vbs is included, because a console
+# window can only ever appear on that path.
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 Write-Output '--- our procs ---'
-$ours = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'ClodKey\.ps1' })
-foreach ($x in $ours) { Write-Output ('pid=' + $x.ProcessId + ' session=' + $x.SessionId + ' parent=' + $x.ParentProcessId) }
+$ours = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='wscript.exe'" |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match 'ClodKeyProxy\.ps1' })
+foreach ($x in $ours) { Write-Output ('pid=' + $x.ProcessId + ' name=' + $x.Name + ' session=' + $x.SessionId + ' parent=' + $x.ParentProcessId) }
 Write-Output '--- console windows owned by ours (G22) ---'
 $src = @'
 using System;

@@ -10,7 +10,7 @@ rem double-click run-hidden.vbs directly - wscript has no console.
 rem
 rem Chain: run-hidden.vbs -> WMI Win32_Process.Create
 rem (CreateFlags=CREATE_NO_WINDOW, ShowWindow=SW_HIDE)
-rem -> powershell ClodKey.ps1 => no console window is EVER created.
+rem -> powershell ClodKeyProxy.ps1 => no console window is EVER created.
 rem (DETACHED_PROCESS=8 was tested and kills powershell.exe on
 rem Win11; CREATE_NO_WINDOW=16 runs with zero windows.)
 rem NO -WindowStyle Hidden: that would create a hidden console
@@ -30,5 +30,5 @@ start "" wscript.exe "%~dp0run-hidden.vbs"
 exit /b 0
 
 :foreground
-powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0ClodKey.ps1"
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0ClodKeyProxy.ps1"
 exit /b 0

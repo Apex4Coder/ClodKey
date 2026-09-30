@@ -17,21 +17,29 @@ jobs:
       - name: Run gates before packaging
         shell: pwsh
         run: |
-          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -Smoke
-          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -SelfTest
+          powershell -NoProfile -ExecutionPolicy Bypass -File check-locales.ps1
+          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKeyProxy.ps1 -Smoke
+          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKeyProxy.ps1 -SelfTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Render screenshots (evidence)
+      - name: Render screenshot (evidence)
         shell: pwsh
-        run: powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -Shot
+        run: powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKeyProxy.ps1 -Shot
 
       - name: Package portable zip
         shell: pwsh
         run: |
           $ver = '${{ github.ref_name }}'
           New-Item -ItemType Directory -Path dist | Out-Null
-          Compress-Archive -Path app-next, deploy.ps1, deploy-next.bat, check-g22.ps1, README.md `
-            -DestinationPath "dist/ClodKey-$ver.zip" -Force
+          New-Item -ItemType Directory -Path stage | Out-Null
+          Copy-Item -Path app-next -Destination stage\app-next -Recurse
+          # ship the bridge as a dependency-free source tree, never its runtime state
+          Remove-Item -Path stage\app-next\bridge\diag -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path stage\app-next\bridge\.env -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path stage\app-next\bridge\*.log* -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path stage\app-next\*.log* -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path deploy.ps1, deploy-next.bat, README.md, LICENSE -Destination stage
+          Compress-Archive -Path stage\* -DestinationPath "dist/ClodKeyProxy-$ver.zip" -Force
           Get-ChildItem dist | ForEach-Object { Write-Host $_.FullName }
 
       - name: Create GitHub Release
@@ -40,5 +48,5 @@ jobs:
           files: dist/*.zip
           generate_release_notes: true
           body: |
-            Portable ClodKey ${{ github.ref_name }} - unzip anywhere on Windows 10/11,
+            Portable ClodKeyProxy ${{ github.ref_name }} - unzip anywhere on Windows 10/11,
             double-click `app-next\run-hidden.vbs`. No installer, no runtime, no admin.

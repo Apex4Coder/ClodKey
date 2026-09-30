@@ -8,7 +8,7 @@ Option Explicit
 ' kills powershell.exe before the first script line (works for node,
 ' not for powershell). CreateFlags=CREATE_NO_WINDOW(16) runs fine in
 ' the interactive session; powershell still allocates a console but
-' its window is never shown, and ClodKey.ps1 calls FreeConsole() at
+' its window is never shown, and ClodKeyProxy.ps1 calls FreeConsole() at
 ' startup - conhost then DESTROYS that hidden window because no
 ' attached process remains. Net result: zero console windows, and
 ' the self-hide fallback never has to run.
@@ -39,7 +39,7 @@ End If
 ' visible or hidden - this is the hard requirement.
 args = Chr(34) & ps & Chr(34) & _
        " -NoProfile -STA -ExecutionPolicy Bypass" & _
-       " -File " & Chr(34) & fso.BuildPath(here, "ClodKey.ps1") & Chr(34) & _
+       " -File " & Chr(34) & fso.BuildPath(here, "ClodKeyProxy.ps1") & Chr(34) & _
        " -Minimized"
 
 Set locator = CreateObject("WbemScripting.SWbemLocator")

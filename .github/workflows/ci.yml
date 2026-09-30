@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   gates:
-    name: Gates (ASCII / parse / smoke / selftest)
+    name: Gates (ASCII / parse / locales / smoke / selftest)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -22,7 +22,7 @@ jobs:
         run: |
           $fail = 0
           Get-ChildItem -Recurse -Include *.ps1,*.bat,*.vbs -File |
-            Where-Object { $_.FullName -notmatch '\\live\.prev-' } |
+            Where-Object { $_.FullName -notmatch '\\live\.prev-' -and $_.FullName -notmatch '\\node_modules\\' } |
             ForEach-Object {
               $bytes = [IO.File]::ReadAllBytes($_.FullName)
               $nonAscii = @($bytes | Where-Object { $_ -gt 127 }).Count
@@ -39,24 +39,46 @@ jobs:
         shell: pwsh
         run: |
           $fail = 0
-          Get-ChildItem -Recurse -Include *.ps1 -File | ForEach-Object {
-            $errs = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
-            if ($errs.Count) {
-              $script:fail = 1
-              $errs | ForEach-Object { Write-Host "::error file=$($_.Name)::line $($_.Extent.StartLineNumber): $($_.Message)" }
+          Get-ChildItem -Recurse -Include *.ps1 -File |
+            Where-Object { $_.FullName -notmatch '\\live\.prev-' -and $_.FullName -notmatch '\\node_modules\\' } |
+            ForEach-Object {
+              $errs = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs)
+              if ($errs.Count) {
+                $script:fail = 1
+                $errs | ForEach-Object { Write-Host "::error file=$($_.Name)::line $($_.Extent.StartLineNumber): $($_.Message)" }
+              }
             }
-          }
           exit $fail
+
+      - name: Bridge syntax + unit transforms
+        shell: pwsh
+        run: |
+          node --check app-next\bridge\server.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node app-next\bridge\tools\unit-transforms.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Locale key cross-check (code vs strings.json)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File check-locales.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Smoke (UI builds, DPAPI roundtrip)
         shell: pwsh
-        run: powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -Smoke
+        run: powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKeyProxy.ps1 -Smoke
 
       - name: SelfTest (save/apply/import/lang/theme/layout asserts)
         shell: pwsh
         run: |
-          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKey.ps1 -SelfTest
+          powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKeyProxy.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Deploy-lock regression tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests\deploy-lock.tests.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload evidence (logs)

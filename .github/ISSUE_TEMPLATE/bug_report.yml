@@ -1,5 +1,5 @@
 name: "\U0001F41E Bug report"
-description: File a bug report. ClodKey is a single-file PowerShell app - the more precise the repro, the faster the fix.
+description: File a bug report. ClodKeyProxy is a single-file PowerShell app - the more precise the repro, the faster the fix.
 title: "[bug] "
 labels: ["bug", "triage"]
 body:
@@ -7,8 +7,8 @@ body:
     attributes:
       value: |
         Thanks for taking the time to fill out this bug report!
-        Before you start: run `powershell -File check-g22.ps1` and
-        `powershell -STA -File live\ClodKey.ps1 -SelfTest` and paste their output below.
+        Before you start: run `powershell -File verify-ui.ps1` and
+        `powershell -STA -File live\ClodKeyProxy.ps1 -SelfTest` and paste their output below.
   - type: checkboxes
     id: searched
     attributes:
@@ -29,6 +29,8 @@ body:
         - secrets / DPAPI (data\secrets.json)
         - apply to Claude CLI (~/.claude/settings.json)
         - system import (env vars / settings.json discovery)
+        - bridge window (start / stop / restart / mini-log, port 33110)
+        - bridge proxy (app-next\bridge\server.mjs)
         - launch / console (run-hidden.vbs, start-clodkey.bat)
         - deploy (deploy.ps1, next -> live)
         - other
@@ -65,7 +67,7 @@ body:
     id: logs
     attributes:
       label: Relevant log output
-      description: Paste the tail of logs\clodkey.log and the output of -SelfTest / check-g22.ps1. This will be automatically formatted into code.
+      description: Paste the tail of logs\clodkey.log and the output of -SelfTest / verify-ui.ps1. This will be automatically formatted into code.
       render: shell
   - type: dropdown
     id: os
