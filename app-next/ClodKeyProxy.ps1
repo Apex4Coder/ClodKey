@@ -1132,7 +1132,8 @@ $btnTheme.Add_Click({
     if ($script:Theme -eq 'light') { Set-Theme 'dark' } else { Set-Theme 'light' }
 })
 $btnTea.Add_Click({
-    Set-Status (T 'tea_msg')
+    if ($script:ExtTea) { try { & $script:ExtTea } catch { Write-Log 'error' ('ext tea: ' + $_.Exception.Message) } }
+    else { Set-Status (T 'tea_msg') }
     Write-Log 'info' 'tea break'
 })
 
@@ -2196,6 +2197,10 @@ function Do-Layout {
     $lblDot.Location = New-Object Drawing.Point(($pad + 1), $subY)
     $subH = $lblDot.PreferredHeight
     $headBottom = $subY + $subH
+    if ($script:ExtHeader) {
+        try { $headBottom += [int](& $script:ExtHeader $pad $headBottom $W) }
+        catch { Write-Log 'error' ('ext header: ' + $_.Exception.Message) }
+    }
     $y = $headBottom + 10
     # profiles row: label left, import button right
     $lblProfiles.Location = New-Object Drawing.Point($pad, $y)
@@ -2433,6 +2438,7 @@ function Apply-Theme {
     $script:Tips.BackColor = $script:ink
     $script:Tips.ForeColor = [Drawing.Color]::White
     $form.Refresh()
+    foreach ($h in @($script:ExtApply)) { if ($h) { try { & $h } catch { Write-Log 'error' ('ext apply: ' + $_.Exception.Message) } } }
 }
 
 # ---------- language re-application ----------
@@ -2506,6 +2512,7 @@ function Apply-Language {
     Set-Status (T 'status_ready')
     # texts changed -> measured widths changed -> re-stack the flow
     Do-Layout
+    foreach ($h in @($script:ExtApply)) { if ($h) { try { & $h } catch { Write-Log 'error' ('ext apply: ' + $_.Exception.Message) } } }
 }
 
 # ---------- flyout: anchor to the tray corner, slide-up + fade ----------
@@ -2797,6 +2804,16 @@ $form.Add_FormClosing({
         Set-Status (T 'hidden_hint')
     }
 })
+
+# EXT socket: optional add-ons in app-next/ext/*.ps1 (dot-sourced, script scope)
+$script:ExtApply = @()
+$ExtDir = Join-Path $AppDir 'ext'
+if (Test-Path $ExtDir) {
+    foreach ($extFile in @(Get-ChildItem -Path $ExtDir -Filter '*.ps1' | Sort-Object Name)) {
+        try { . $extFile.FullName; Write-Log 'info' ('ext loaded: ' + $extFile.Name) }
+        catch { Write-Log 'error' ('ext ' + $extFile.Name + ': ' + $_.Exception.Message) }
+    }
+}
 
 # ---------- boot ----------
 [void](Import-System $true)
