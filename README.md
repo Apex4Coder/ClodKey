@@ -13,6 +13,7 @@ Zero-install · zero-console-windows · zero dependencies
 [![Bridge](https://img.shields.io/badge/bridge-Node%20%3E%3D18-339933)](#-zoo-bridge)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Locales](https://img.shields.io/badge/UI-ru%20·%20en%20·%20zh%20·%20es-orange)](app-next/strings.json)
+[![Fueled by LINUX SB](https://img.shields.io/badge/fueled%20by-LINUX%20SB-f5c518?labelColor=1a1a1a)](https://linux.sb)
 
 *One `.ps1` file for the UI. One `.mjs` file for the bridge. Both ship with nothing to install.*
 
@@ -21,6 +22,37 @@ Zero-install · zero-console-windows · zero dependencies
 </div>
 
 ---
+
+## 🔁 What problem it solves
+
+Some API stations — for example [agentrouter.org](https://agentrouter.org) — accept only
+requests in the **Claude CLI format** (Anthropic Messages API as sent by `claude`).
+Out of the box such a key works only in Claude CLI or in IDEs that speak the same format.
+
+**ClodKey's Zoo Bridge is a relay that translates between the two worlds:**
+
+```
+Zoo Code / Roo Code  ⇄  Zoo Bridge 127.0.0.1:33110  ⇄  station that speaks Claude CLI format only
+   (OpenAI-compatible)        (format relay)                 (e.g. agentrouter.org)
+```
+
+So a key that was usable only from Claude CLI becomes a regular provider inside
+**Zoo Code (Roo Code)** in VS Code.
+
+| Client | Status |
+| --- | --- |
+| Claude CLI (`claude`) | ✅ tested — profiles are applied directly to `~/.claude/settings.json` |
+| Zoo Code / Roo Code | ✅ tested — through Zoo Bridge |
+| Cline, Kilo Code, Continue, Cursor and other coding tools | ⚠️ **not tested** — may work if they speak an OpenAI-compatible API, no guarantees |
+
+### 🟣 Opus watch
+
+agentrouter.org turns the **Claude Opus family** on and off **on a schedule**.
+The model check shows which models the station is serving *right now*, so you can see
+the moment Opus goes live instead of burning requests on a model that is switched off.
+
+> ClodKey is an independent tool, not affiliated with Anthropic or agentrouter.org.
+> Use your keys in line with the terms of the station you use.
 
 ## ✨ What it does
 
@@ -36,7 +68,8 @@ Two **independent contours**, deliberately kept apart (see `SPEC.md`):
 - 🎛 **Flyout from the tray.** Click the icon — a mini neumorphic panel slides up
   from the tray corner (eased slide + fade). Click again — it hides. `✕` = hide, never quit.
 - 🔑 **Profiles of keys.** Base URL + API key (masked, 👁 reveal), auth mode
-  (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / both).
+  (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / both). The **System** profile is always
+  first and locked; add / edit / delete your own with `+`.
 - 🛡 **DPAPI at rest.** Keys encrypted with Windows DPAPI (CurrentUser) + entropy salt.
   The file is useless on another machine or under another user.
 - 📥 **System import.** On startup it discovers existing `ANTHROPIC_*` env vars and
@@ -46,8 +79,10 @@ Two **independent contours**, deliberately kept apart (see `SPEC.md`):
 - 🧭 **Bridge window.** A dedicated window with Start / Stop / Restart, a
   "load current profile" action and a one-line mini-log fed from the bridge
   `/status`. Closing the window only hides it — the listener on `33110` keeps running.
-- 🌗 **Light / dark themes, 4 languages** — micro icon buttons in the header
+- 🌗 **Light / dark themes, 4 languages** (English by default) — micro icon buttons in the header
   (`Я A 文 Ñ` · `☀/☾` · `☕` · `✕`), persisted across restarts.
+- ☕ **Coffee window** — QR code + Ethereum (ERC20) address with one-click copy.
+- 🧩 **Extensions** — drop-in `app-next/ext/*.ps1` add-ons (badge, coffee window) loaded on start.
 - 🎨 **Soft neumorphism** — tokens from canonical
   [themesberg/neumorphism-ui-bootstrap](https://github.com/themesberg/neumorphism-ui-bootstrap):
   raised = two soft offset shadows, pressed/input = inset. No borders, no gradients.
@@ -93,10 +128,11 @@ ClodKey/
 ├── app-next/                     # the app (source of truth)
 │   ├── ClodKeyProxy.ps1          # UI + DPAPI + apply + selftest + shot + bridge window
 │   ├── strings.json              # ru / en / zh / es (UI text = data, not code)
+│   ├── ext/                      # drop-in add-ons: badge, coffee window, their strings
 │   ├── run-hidden.vbs            # WMI hidden launch
 │   ├── start-clodkey.bat
 │   └── bridge/                   # Zoo Bridge (Node, dependency-free)
-│       ├── server.mjs            # OpenAI-compatible proxy for the upstream
+│       ├── server.mjs            # format relay: Zoo/Roo Code <-> Claude CLI-format upstream
 │       ├── .env.example          # template - copy to .env (gitignored)
 │       └── tools/                # unit transforms + local harnesses
 ├── tests/                        # deploy-lock regression suite (temp tree only)
@@ -129,6 +165,9 @@ copy .env.example .env      # then put your real UPSTREAM_API_KEY in .env
 node server.mjs             # listens on 127.0.0.1:33110
 ```
 
+In Zoo Code / Roo Code pick an **OpenAI-compatible** provider with base URL
+`http://127.0.0.1:33110/v1`.
+
 - **Ownership by path, not by port.** `deploy.ps1` stops only node processes whose
   working directory is our `bridge\`, so an unrelated bridge on another port is
   never touched (a real defect paid for this rule — see the header of `deploy.ps1`).
@@ -158,6 +197,9 @@ for *your* Windows user. The bridge upstream key lives in `app-next\bridge\.env`
 (plaintext, machine-local, gitignored). Copy either to another machine and the
 DPAPI file is unreadable by design.
 
+**Does it work with Cline / Cursor / Continue?** Not tested. Only Claude CLI and
+Zoo Code / Roo Code are verified.
+
 **Can I run two instances?** No — single-instance mutex; the second one exits silently.
 
 **Does closing the Bridge window stop the bridge?** No. Closing hides the window and
@@ -165,6 +207,20 @@ stops only its UI timer; the listener on `33110` keeps serving.
 
 **The tray icon is hidden under the chevron?** Windows does that to all new icons.
 Settings → Personalization → Taskbar → Other system tray icons → show ClodKey.
+
+## ☕ Support
+
+<div align="center">
+
+<a href="https://etherscan.io/address/0x50153B5CC3eae905291d62602226C80896Aa64f2"><img src="assets/coffee.svg" width="100%" alt="Buy me a coffee — Ethereum (ERC20)"/></a>
+
+```
+0x50153B5CC3eae905291d62602226C80896Aa64f2
+```
+
+<sub>Ethereum (ERC20) only — ETH or ERC-20 tokens. Other networks = lost funds.</sub>
+
+</div>
 
 ## 🤝 Contributing
 
