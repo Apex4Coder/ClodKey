@@ -1,23 +1,22 @@
 # ============================================================
-# Clod-key-proxy - paths that must NEVER be committed
+# ClodKeyProxy - paths that must NEVER be committed
 # ============================================================
 
-# ---- runtime state (secrets, logs, deploy backups) ----------
-# data\secrets.json is DPAPI ciphertext (CurrentUser scope);
+# ---- runtime state (secrets, logs, backups) -----------------
+# data\secrets.json is DPAPI ciphertext (CurrentUser only).
 # logs\ and backups\ are local history. State lives OUTSIDE
-# the release on purpose (GOLD: deploy moves code only).
+# the release on purpose (updating the app moves code only).
 data/
 logs/
 backups/
 
 # ---- installed release + rollback snapshots -----------------
-# live\ and live.prev-* are copies of app-next\, not sources.
 live/
 live.prev-*/
 
 # ---- bridge runtime: credentials + captured traffic --------
 # .env holds the real UPSTREAM_API_KEY; diag/ holds full
-# request bodies (avg ~2 MB each) captured on rejection.
+# request bodies captured on rejection.
 app-next/bridge/.env
 app-next/bridge/*.log
 app-next/bridge/*.log.*
@@ -34,7 +33,6 @@ app-next/*.log
 # ---- OS noise ----------------------------------------------
 Thumbs.db
 Desktop.ini
-ehthumbs.db
 
 # ---- editors -----------------------------------------------
 .vscode/
@@ -43,3 +41,10 @@ ehthumbs.db
 
 # ---- local drop folders (patches/archives, not the release) -
 00/
+
+# internal dev process (local only)
+SPEC.md
+deploy.ps1
+deploy-next.bat
+verify-deploy.ps1
+tests/

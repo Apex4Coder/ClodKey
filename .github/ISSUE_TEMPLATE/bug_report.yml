@@ -7,8 +7,9 @@ body:
     attributes:
       value: |
         Thanks for taking the time to fill out this bug report!
-        Before you start: run `powershell -File verify-ui.ps1` and
-        `powershell -STA -File live\ClodKeyProxy.ps1 -SelfTest` and paste their output below.
+        Before you start: run
+        `powershell -STA -ExecutionPolicy Bypass -File app-next\ClodKeyProxy.ps1 -SelfTest`
+        and paste its output below.
   - type: checkboxes
     id: searched
     attributes:
@@ -32,7 +33,6 @@ body:
         - bridge window (start / stop / restart / mini-log, port 33110)
         - bridge proxy (app-next\bridge\server.mjs)
         - launch / console (run-hidden.vbs, start-clodkey.bat)
-        - deploy (deploy.ps1, next -> live)
         - other
     validations:
       required: true
@@ -57,8 +57,8 @@ body:
       label: Steps to reproduce
       description: Exact steps from a fresh start.
       placeholder: |
-        1. Run live\run-hidden.vbs
-        2. Click tray icon
+        1. Run app-next\start-clodkey.bat
+        2. Click the tray icon
         3. Switch language to EN
         4. See ...
     validations:
@@ -67,7 +67,7 @@ body:
     id: logs
     attributes:
       label: Relevant log output
-      description: Paste the tail of logs\clodkey.log and the output of -SelfTest / verify-ui.ps1. This will be automatically formatted into code.
+      description: Paste the tail of logs\clodkey.log and the output of -SelfTest. This will be automatically formatted into code.
       render: shell
   - type: dropdown
     id: os

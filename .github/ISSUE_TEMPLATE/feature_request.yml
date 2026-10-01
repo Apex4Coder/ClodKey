@@ -6,9 +6,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        ClodKeyProxy follows the GOLD principles: no silent defaults, typed ignorance,
-        every tray action has a CLI twin. A good feature request states what the
-        selftest should assert.
+        ClodKeyProxy prefers explicit behavior over silent defaults: unknown values
+        stay unknown, and every tray action has a CLI twin. A good feature request
+        states what the selftest should assert.
   - type: checkboxes
     id: searched
     attributes:
@@ -35,7 +35,7 @@ body:
     id: test
     attributes:
       label: Acceptance test (CLI twin)
-      description: What should `powershell -File live\ClodKeyProxy.ps1 -SelfTest` assert when this feature is done?
+      description: What should `powershell -STA -File app-next\ClodKeyProxy.ps1 -SelfTest` assert when this feature is done?
       placeholder: "Set-Lang 'zh' -> sys profile renamed to 系统 ..."
     validations:
       required: false

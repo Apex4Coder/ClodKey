@@ -75,12 +75,6 @@ jobs:
           powershell -NoProfile -STA -ExecutionPolicy Bypass -File app-next\ClodKeyProxy.ps1 -SelfTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Deploy-lock regression tests
-        shell: pwsh
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File tests\deploy-lock.tests.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Upload evidence (logs)
         if: always()
         uses: actions/upload-artifact@v5

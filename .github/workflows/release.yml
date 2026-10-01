@@ -38,7 +38,7 @@ jobs:
           Remove-Item -Path stage\app-next\bridge\.env -Force -ErrorAction SilentlyContinue
           Remove-Item -Path stage\app-next\bridge\*.log* -Force -ErrorAction SilentlyContinue
           Remove-Item -Path stage\app-next\*.log* -Force -ErrorAction SilentlyContinue
-          Copy-Item -Path deploy.ps1, deploy-next.bat, README.md, LICENSE -Destination stage
+          Copy-Item -Path README.md, LICENSE -Destination stage
           Compress-Archive -Path stage\* -DestinationPath "dist/ClodKeyProxy-$ver.zip" -Force
           Get-ChildItem dist | ForEach-Object { Write-Host $_.FullName }
 

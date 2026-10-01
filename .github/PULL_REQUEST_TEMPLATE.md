@@ -9,15 +9,15 @@
 - [ ] Breaking change (fix/feature changing existing behavior)
 - [ ] Docs / strings only (no code behavior change)
 
-## GOLD invariants checklist
+## Invariants checklist
 
-The project follows the GOLD spec. Confirm each box or explain:
+Confirm each box or explain:
 
 - [ ] `.ps1` source stays **ASCII-only** (UI text goes to `strings.json`, all 4 locales)
 - [ ] `.bat` stays **ASCII + CRLF**; `.ps1`/`.vbs` stay **ASCII** (no BOM)
 - [ ] No new **silent defaults**: unknown values are typed (`"unknown"` / log + empty), never guessed
 - [ ] Every new tray action has a **CLI twin** (`-SelfTest` case or a `-Smoke` assertion)
-- [ ] State (`data\`, `logs\`) is **never** written inside `app-next\` or `live\`
+- [ ] State (`data\`, `logs\`) is **never** written inside `app-next\`
 - [ ] Bridge `.env`, `diag\` and `*.log` are **never** committed (credentials + captured traffic)
 - [ ] GUI path writes **nothing to stdout** (file log only)
 - [ ] `Application::Run()` without a form argument; no `detached` for the GUI process
@@ -30,7 +30,6 @@ Run locally (Windows runner) and paste results:
 powershell -NoProfile -STA -File app-next\ClodKeyProxy.ps1 -Smoke
 powershell -NoProfile -STA -File app-next\ClodKeyProxy.ps1 -SelfTest
 powershell -NoProfile -ExecutionPolicy Bypass -File check-locales.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File tests\deploy-lock.tests.ps1
 node app-next\bridge\tools\unit-transforms.mjs
 ```
 

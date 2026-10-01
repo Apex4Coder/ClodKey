@@ -4,7 +4,7 @@ Thanks for your interest! ClodKeyProxy is deliberately small: **one PowerShell
 file for the UI, one dependency-free `.mjs` file for the bridge, zero console
 windows**. The rules below keep it that way.
 
-## Ground rules (the GOLD invariants)
+## Ground rules
 
 These are not style preferences - each one was paid for by a real bug:
 
@@ -16,8 +16,8 @@ These are not style preferences - each one was paid for by a real bug:
    show empty - never substitute a guess.
 4. **Every tray action has a CLI twin.** If you add a button, add the
    matching assertion to `-SelfTest`. Clicks are untestable; commands are.
-5. **State never lives inside a release.** `data\` and `logs\` stay one
-   level above `app-next\`/`live\` so deploy/rollback moves only code.
+5. **State never lives inside the release.** `data\` and `logs\` stay one
+   level above `app-next\`, so updating the app never touches your data.
 6. **GUI writes nothing to stdout.** File log only (`logs\clodkey.log`).
 7. **`Application::Run()` without a form argument**, no `detached` for the
    GUI process, `FreeConsole()` at startup - the zero-window guarantee
@@ -27,7 +27,7 @@ These are not style preferences - each one was paid for by a real bug:
    at DPI ≠ 100%.
 9. **Two contours stay apart.** The Claude CLI contour writes only
    `~/.claude/settings.json`; the bridge contour writes only
-   `app-next/bridge/.env`. No handler may cross the line (see `SPEC.md`).
+   `app-next/bridge/.env`. No handler may cross the line.
 
 ## Dev loop
 
@@ -38,9 +38,7 @@ powershell -NoProfile -STA -File app-next\ClodKeyProxy.ps1 -SelfTest   # behavio
 powershell -NoProfile -STA -File app-next\ClodKeyProxy.ps1 -Shot       # logs\shot.png evidence
 powershell -NoProfile -File parse-check.ps1                            # syntax + brace balance, line numbers
 powershell -NoProfile -File check-locales.ps1                          # every T 'key' exists in all 4 locales
-powershell -File deploy.ps1                                            # next -> live + relaunch
 powershell -File check-g22.ps1                                         # zero console windows
-powershell -File verify-ui.ps1                                         # smoke + selftest + shot + log tail
 ```
 
 Bridge side:
@@ -49,13 +47,6 @@ Bridge side:
 cd app-next\bridge
 node --check server.mjs
 node tools\unit-transforms.mjs
-```
-
-Regression suite (runs on a throwaway tree under `%TEMP%`, never touches the
-real install):
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tests\deploy-lock.tests.ps1
 ```
 
 Debug launch with a visible console: `set CK_NO_DETACH=1` then run
@@ -85,7 +76,7 @@ If you need to change configuration, edit `app-next/bridge/.env.example`, never
 
 - One behavior change per PR; fill the PR template checklist.
 - CI (`.github/workflows/ci.yml`) runs the ASCII / parse / bridge / locales /
-  smoke / selftest / deploy-lock gates on every push - keep it green.
+  smoke / selftest gates on every push - keep it green.
 - UI changes: attach before/after `-Shot` renders.
 
 ## Code of conduct
