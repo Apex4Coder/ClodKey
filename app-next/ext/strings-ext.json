@@ -1,0 +1,42 @@
+{
+  "ru": {
+    "badge_prefix": "При поддержке",
+    "badge_tip": "Открыть linux.sb — AI-сообщество LINUX SB",
+    "tea_title": "Угостить кофе",
+    "tea_sub": "Если ClodKeyProxy экономит ваше время — чашка кофе поддержит проект. Спасибо!",
+    "tea_net": "Сеть: Ethereum (ERC20)",
+    "tea_copy": "Скопировать адрес",
+    "tea_copied": "Скопировано!",
+    "tea_warn": "Отправляйте только ETH или токены ERC-20 в сети Ethereum. Другая сеть — потеря средств."
+  },
+  "en": {
+    "badge_prefix": "Fueled by",
+    "badge_tip": "Open linux.sb — the LINUX SB AI community",
+    "tea_title": "Buy me a coffee",
+    "tea_sub": "If ClodKeyProxy saves you time, a coffee keeps the project going. Thank you!",
+    "tea_net": "Network: Ethereum (ERC20)",
+    "tea_copy": "Copy address",
+    "tea_copied": "Copied!",
+    "tea_warn": "Send only ETH or ERC-20 tokens on Ethereum mainnet. Any other network = lost funds."
+  },
+  "zh": {
+    "badge_prefix": "动力来自",
+    "badge_tip": "打开 linux.sb — LINUX SB AI 社区",
+    "tea_title": "请我喝杯咖啡",
+    "tea_sub": "如果 ClodKeyProxy 为你节省了时间，一杯咖啡就是对项目最好的支持。谢谢！",
+    "tea_net": "网络：Ethereum (ERC20)",
+    "tea_copy": "复制地址",
+    "tea_copied": "已复制！",
+    "tea_warn": "仅限以太坊主网的 ETH 或 ERC-20 代币，使用其他网络将导致资产丢失。"
+  },
+  "es": {
+    "badge_prefix": "Impulsado por",
+    "badge_tip": "Abrir linux.sb — la comunidad de IA LINUX SB",
+    "tea_title": "Invítame a un café",
+    "tea_sub": "Si ClodKeyProxy te ahorra tiempo, un café mantiene vivo el proyecto. ¡Gracias!",
+    "tea_net": "Red: Ethereum (ERC20)",
+    "tea_copy": "Copiar dirección",
+    "tea_copied": "¡Copiado!",
+    "tea_warn": "Envía solo ETH o tokens ERC-20 en la red principal de Ethereum. Otra red = fondos perdidos."
+  }
+}
